@@ -50,6 +50,8 @@ def font_size_for(s):
 
 # ── COLOUR GRADIENT ──────────────────────────────────────
 def number_color(val, lo, hi, invert=False):
+    # default (invert=False): red(low) → gold(mid) → green(high)
+    # invert=True:            green(low) → gold(mid) → red(high)
     if hi == lo:
         return GOLD
     t = max(0.0, min(1.0, (val - lo) / (hi - lo)))
@@ -57,14 +59,16 @@ def number_color(val, lo, hi, invert=False):
         t = 1.0 - t
     if t < 0.5:
         s = t * 2
-        r = int(0x27 + (0xc9 - 0x27) * s)
-        g = int(0xae + (0xa8 - 0xae) * s)
-        b = int(0x60 + (0x4c - 0x60) * s)
+        # red → gold
+        r = int(0xe7 + (0xc9 - 0xe7) * s)
+        g = int(0x2d + (0xa8 - 0x2d) * s)
+        b = int(0x2d + (0x4c - 0x2d) * s)
     else:
         s = (t - 0.5) * 2
-        r = int(0xc9 + (0xe7 - 0xc9) * s)
-        g = int(0xa8 + (0x2d - 0xa8) * s)
-        b = int(0x4c + (0x2d - 0x4c) * s)
+        # gold → green
+        r = int(0xc9 + (0x27 - 0xc9) * s)
+        g = int(0xa8 + (0xae - 0xa8) * s)
+        b = int(0x4c + (0x60 - 0x4c) * s)
     return f"#{r:02x}{g:02x}{b:02x}"
 
 def crypto_rand(lo, hi):
@@ -480,7 +484,7 @@ class ControlPanel(tk.Tk):
         self._rows: dict      = {}
         self._drawer_open     = False
 
-        self._invert_gradient = tk.BooleanVar(value=True)
+        self._invert_gradient = tk.BooleanVar(value=False)
         self._lo_var          = tk.StringVar(value="1")
         self._hi_var          = tk.StringVar(value="100")
         self._interval_var    = tk.StringVar(value="0")
