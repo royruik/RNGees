@@ -19,6 +19,12 @@ try:
 except ImportError:
     WIN32 = False
 
+try:
+    import keyboard
+    HAS_KEYBOARD = True
+except ImportError:
+    HAS_KEYBOARD = False
+
 # ── THEME ────────────────────────────────────────────────
 BG       = "#0a1a10"
 FELT     = "#0d2818"
@@ -111,32 +117,9 @@ def get_window_rect(hwnd):
     except Exception:
         return None
 
-def get_foreground_hwnd():
-    if not WIN32:
-        return None
-    try:
-        return ctypes.windll.user32.GetForegroundWindow()
-    except Exception:
-        return None
 
-def set_topmost_raw(hwnd_int, topmost):
-    """Set TOPMOST on a raw Win32 HWND."""
-    if not WIN32:
-        return
-    try:
-        HWND_TOPMOST   = -1
-        HWND_NOTOPMOST = -2
-        SWP_NOMOVE     = 0x0002
-        SWP_NOSIZE     = 0x0001
-        SWP_NOACTIVATE = 0x0010
-        ctypes.windll.user32.SetWindowPos(
-            hwnd_int,
-            HWND_TOPMOST if topmost else HWND_NOTOPMOST,
-            0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
-        )
-    except Exception:
-        pass
+
+
 
 
 # ── RNG WIDGET ───────────────────────────────────────────
@@ -157,13 +140,17 @@ class RNGWidget(tk.Toplevel):
 
         # Offset from table's bottom-left corner (in pixels).
         # User can drag to reposition; offset is preserved across table moves.
-        self._off_x = MARGIN                          # default: bottom-left + margin
+        self._off_x = self._S + MARGIN                # default: one widget width from left
         self._off_y = -(self._S + MARGIN)             # negative = up from bottom
-        self._drag_moved  = False
+        self._drag_moved   = False
         self._drag_start_x = self._drag_start_y = 0
+        self._dragging     = False  # pause tracking while user is dragging
+        self._resizing     = False
+        self._resize_start_x = self._resize_start_y = 0
+        self._resize_start_s = 0
 
         self.overrideredirect(True)
-        self.wm_attributes("-topmost", False)
+        self.wm_attributes("-topmost", True)
         self.wm_attributes("-alpha", 0.93)
         self.configure(bg="#060e09")
         self.geometry(f"{self._S}x{self._S}")
@@ -176,6 +163,12 @@ class RNGWidget(tk.Toplevel):
 
         if self._tracking:
             threading.Thread(target=self._track_loop, daemon=True).start()
+
+    def _defocus_entries(self, event):
+        """If click target is not an Entry, move focus to the window so
+        any active entry loses focus, triggers FocusOut → applies settings."""
+        if not isinstance(event.widget, tk.Entry):
+            self.focus()
 
     # ── BUILD ─────────────────────────────────────────
     def _build(self):
@@ -199,40 +192,135 @@ class RNGWidget(tk.Toplevel):
             S-11, 4, S-4, 11, fill=DIM, outline=""
         )
 
-        self.cv.bind("<ButtonPress-1>",   self._on_press)
-        self.cv.bind("<B1-Motion>",       self._on_drag)
-        self.cv.bind("<ButtonRelease-1>", self._on_release)
         self.cv.bind("<Enter>", lambda e: self.cv.itemconfig("bg_rect", outline=GOLD))
         self.cv.bind("<Leave>", lambda e: self.cv.itemconfig("bg_rect", outline=BORDER))
 
-    # ── Z-ORDER ───────────────────────────────────────
-    def _sync_zorder(self):
-        """Topmost only when the poker table is the foreground window."""
-        if not WIN32:
-            return
-        try:
-            fg           = get_foreground_hwnd()
-            table_active = (fg == self.hwnd) if self.hwnd else True
-            wid          = self.winfo_id()
-            set_topmost_raw(wid, table_active)
-            self.wm_attributes("-topmost", table_active)
-        except Exception:
-            pass
+        if self.hwnd:
+            # Tracked widget: normal drag + click
+            self.cv.bind("<ButtonPress-1>",   self._on_press)
+            self.cv.bind("<B1-Motion>",       self._on_drag)
+            self.cv.bind("<ButtonRelease-1>", self._on_release)
+        else:
+            # Manual widget: edge-aware resize + drag
+            self.cv.bind("<Motion>",          self._resize_cursor)
+            self.cv.bind("<ButtonPress-1>",   self._smart_press)
+            self.cv.bind("<B1-Motion>",       self._smart_motion)
+            self.cv.bind("<ButtonRelease-1>", self._smart_release)
+            self.cv.bind("<Leave>",           lambda e: (
+                self.cv.itemconfig("bg_rect", outline=BORDER),
+                self.cv.configure(cursor="")))
+
+    EDGE = 8  # px from edge that counts as resize zone
+
+    def _get_edge(self, x, y):
+        """Return which edge/corner the cursor is on, or None."""
+        S = self._S
+        E = self.EDGE
+        on_r = x >= S - E
+        on_b = y >= S - E
+        on_l = x <= E
+        on_t = y <= E
+        if on_r and on_b: return "se"
+        if on_l and on_b: return "sw"
+        if on_r and on_t: return "ne"
+        if on_l and on_t: return "nw"
+        if on_r:          return "e"
+        if on_l:          return "w"
+        if on_b:          return "s"
+        if on_t:          return "n"
+        return None
+
+    _CURSORS = {
+        "n": "top_side", "s": "bottom_side",
+        "e": "right_side", "w": "left_side",
+        "ne": "top_right_corner", "nw": "top_left_corner",
+        "se": "bottom_right_corner", "sw": "bottom_left_corner",
+    }
+
+    def _resize_cursor(self, e):
+        edge = self._get_edge(e.x, e.y)
+        self.cv.configure(cursor=self._CURSORS.get(edge, ""))
+
+    def _smart_press(self, e):
+        self._edge = self._get_edge(e.x, e.y)
+        if self._edge:
+            self._resizing       = True
+            self._resize_start_x = e.x_root
+            self._resize_start_y = e.y_root
+            self._resize_start_s = self._S
+            self._resize_win_x   = self.winfo_x()
+            self._resize_win_y   = self.winfo_y()
+        else:
+            self._resizing     = False
+            self._drag_moved   = False
+            self._drag_start_x = e.x_root
+            self._drag_start_y = e.y_root
+            self._drag_win_x   = self.winfo_x()
+            self._drag_win_y   = self.winfo_y()
+            self._dragging     = False  # only set True once motion starts
+
+    def _smart_motion(self, e):
+        if not self._resizing and not self._edge:
+            self._dragging   = True
+            self._drag_moved = True
+        if self._resizing:
+            dx = e.x_root - self._resize_start_x
+            dy = e.y_root - self._resize_start_y
+            edge = self._edge
+            s0   = self._resize_start_s
+            # Determine new size and new top-left based on edge
+            if edge in ("e", "se", "ne"):   delta = dx
+            elif edge in ("w", "sw", "nw"): delta = -dx
+            elif edge == "s":               delta = dy
+            elif edge == "n":               delta = -dy
+            else:                           delta = max(dx, dy)
+            new_s = max(40, min(200, s0 + delta))
+            # Adjust position for edges that move the top-left
+            nx, ny = self._resize_win_x, self._resize_win_y
+            if edge in ("w", "sw", "nw"):
+                nx = self._resize_win_x + (s0 - new_s)
+            if edge in ("n", "ne", "nw"):
+                ny = self._resize_win_y + (s0 - new_s)
+            self._apply_size(new_s)
+            self.geometry(f"{new_s}x{new_s}+{nx}+{ny}")
+        elif self._dragging:
+            dx = e.x_root - self._drag_start_x
+            dy = e.y_root - self._drag_start_y
+            self._drag_moved = True
+            self.geometry(f"+{self._drag_win_x + dx}+{self._drag_win_y + dy}")
+
+    def _smart_release(self, e):
+        self._resizing = False
+        self._dragging = False
+        if not self._drag_moved and not self._edge:
+            # Pure click on center — generate
+            self.generate()
+        self._edge = None
+
+    def _apply_size(self, new_s):
+        """Resize the widget canvas in place."""
+        self._S = new_s
+        pad = 3
+        fs  = font_size_for(new_s)
+        self.cv.configure(width=new_s, height=new_s)
+        self.cv.coords("bg_rect", pad, pad, new_s-pad, new_s-pad)
+        self.cv.coords(self.num_id, new_s//2, new_s//2)
+        self.cv.itemconfig(self.num_id, font=("Courier New", fs, "bold"))
+        self.cv.coords(self.dot_id, new_s-11, 4, new_s-4, 11)
 
     # ── TRACKING ──────────────────────────────────────
     def _track_loop(self):
         """Every 250 ms: reposition widget relative to table using stored offset."""
         while self._tracking:
             try:
-                r = get_window_rect(self.hwnd)
-                if r:
-                    tx, ty, tw, th = r
-                    new_s = widget_size_for(tw, th)
-                    # Widget position = table bottom-left + offset
-                    wx = tx + self._off_x
-                    wy = ty + th + self._off_y
-                    self.after(0, self._move_to, wx, wy, new_s)
-                    self.after(0, self._sync_zorder)
+                if not self._dragging:
+                    r = get_window_rect(self.hwnd)
+                    if r:
+                        tx, ty, tw, th = r
+                        new_s = widget_size_for(tw, th)
+                        wx = tx + self._off_x
+                        wy = ty + th + self._off_y
+                        self.after(0, self._move_to, wx, wy, new_s)
             except Exception:
                 pass
             time.sleep(0.25)
@@ -240,14 +328,24 @@ class RNGWidget(tk.Toplevel):
     def _move_to(self, wx, wy, new_s):
         try:
             if new_s != self._S:
-                # Rescale offset proportionally
                 ratio = new_s / self._S
                 self._off_x = int(self._off_x * ratio)
                 self._off_y = int(self._off_y * ratio)
                 self._S = new_s
-                self.cv.destroy()
+
+                # Resize in place — never destroy canvas so timer threads
+                # keep their cv/num_id/dot_id references valid
+                pad = 3
+                fs  = font_size_for(new_s)
                 self.geometry(f"{new_s}x{new_s}")
-                self._build()
+                self.cv.configure(width=new_s, height=new_s)
+                self.cv.coords("bg_rect", pad, pad, new_s-pad, new_s-pad)
+                self.cv.coords(self.num_id, new_s//2, new_s//2)
+                self.cv.itemconfig(self.num_id,
+                                   font=("Courier New", fs, "bold"))
+                self.cv.coords(self.dot_id,
+                               new_s-11, 4, new_s-4, 11)
+
             self.geometry(f"+{wx}+{wy}")
         except Exception:
             pass
@@ -308,30 +406,46 @@ class RNGWidget(tk.Toplevel):
         self._drag_moved   = False
         self._drag_start_x = e.x_root
         self._drag_start_y = e.y_root
-        # Snapshot of widget position at drag start
         self._drag_win_x   = self.winfo_x()
         self._drag_win_y   = self.winfo_y()
+        self._dragging     = True
+
+    def _clamp_to_table(self, wx, wy):
+        """Clamp widget position so it stays fully inside the table bounds."""
+        if not self.hwnd:
+            return wx, wy
+        r = get_window_rect(self.hwnd)
+        if not r:
+            return wx, wy
+        tx, ty, tw, th = r
+        S = self._S
+        wx = max(tx, min(wx, tx + tw - S))
+        wy = max(ty, min(wy, ty + th - S))
+        return wx, wy
 
     def _on_drag(self, e):
         self._drag_moved = True
         dx = e.x_root - self._drag_start_x
         dy = e.y_root - self._drag_start_y
-        self.geometry(f"+{self._drag_win_x + dx}+{self._drag_win_y + dy}")
+        wx, wy = self._clamp_to_table(
+            self._drag_win_x + dx,
+            self._drag_win_y + dy
+        )
+        self.geometry(f"+{wx}+{wy}")
 
     def _on_release(self, e):
+        self._dragging = False
         if not self._drag_moved:
-            # Pure click → generate
             self.generate()
         else:
-            # Update stored offset so tracking locks to new position
             if self.hwnd:
                 r = get_window_rect(self.hwnd)
                 if r:
                     tx, ty, tw, th = r
-                    # New offset = current widget position relative to table bottom-left
-                    self._off_x = self.winfo_x() - tx
-                    self._off_y = self.winfo_y() - (ty + th)
-            # If no table (manual widget), just stay where it is
+                    # Store clamped offset
+                    wx, wy = self._clamp_to_table(self.winfo_x(), self.winfo_y())
+                    self._off_x = wx - tx
+                    self._off_y = wy - (ty + th)
 
     def destroy(self):
         self._tracking      = False
@@ -375,13 +489,23 @@ class ControlPanel(tk.Tk):
 
         self._build()
         self._bind_hotkey()
+        # Clicking anywhere outside an entry defocuses it (hides cursor + applies)
+        self.bind_all("<Button-1>", self._defocus_entries, add="+")
 
+        if not HAS_KEYBOARD:
+            self._log("pip install keyboard  → for global hotkey")
         if WIN32:
             self._log("Scanning for poker tables…")
             threading.Thread(target=self._scan_loop, daemon=True).start()
         else:
             self._log("pywin32 not found — manual mode only.")
             self._log("Install:  pip install pywin32")
+
+    def _defocus_entries(self, event):
+        """If click target is not an Entry, move focus to the window so
+        any active entry loses focus, triggers FocusOut → applies settings."""
+        if not isinstance(event.widget, tk.Entry):
+            self.focus()
 
     # ── BUILD ─────────────────────────────────────────
     def _build(self):
@@ -552,14 +676,25 @@ class ControlPanel(tk.Tk):
         key = self._hotkey_var.get().strip().lower()
         if not key:
             return
-        try:
-            if self._hotkey_bound:
-                self.unbind_all(f"<Key-{self._hotkey_bound}>")
-        except Exception:
-            pass
+
+        # Unbind previous
+        if HAS_KEYBOARD and self._hotkey_bound:
+            try: keyboard.remove_hotkey(self._hotkey_bound)
+            except Exception: pass
+        elif self._hotkey_bound:
+            try: self.unbind_all(f"<Key-{self._hotkey_bound}>")
+            except Exception: pass
+
         self._hotkey_bound = key
-        self.bind_all(f"<Key-{key}>", self._on_hotkey)
-        self._log(f"Hotkey: '{key}'")
+
+        if HAS_KEYBOARD:
+            # Global hotkey — fires even when another window is focused
+            keyboard.add_hotkey(key, lambda: self.after(0, self._on_hotkey))
+            self._log(f"Hotkey: '{key}' (global)")
+        else:
+            # Fallback: tkinter-only (requires panel focus)
+            self.bind_all(f"<Key-{key}>", self._on_hotkey)
+            self._log(f"Hotkey: '{key}' (install keyboard lib for global)")
 
     def _on_hotkey(self, event=None):
         self._apply_settings()
@@ -591,20 +726,24 @@ class ControlPanel(tk.Tk):
         tk.Label(row, text=title[:26], bg=FELT, fg=CREAM,
                  font=("Courier New", 8), anchor="w").pack(side="left")
 
-        def _close_one():
-            w = self.widgets.get(key)
-            if w:
-                try: w.destroy()
-                except: pass
-            self.widgets.pop(key, None)
-            self._remove_row(key)
-            self._refresh_status()
+        # X button only for manual widgets — auto-detected tables
+        # are removed automatically when the table closes
+        is_manual = isinstance(key, str)
+        if is_manual:
+            def _close_one():
+                w = self.widgets.get(key)
+                if w:
+                    try: w.destroy()
+                    except: pass
+                self.widgets.pop(key, None)
+                self._remove_row(key)
+                self._refresh_status()
 
-        tk.Button(row, text="✕", bg=BG, fg=RED_COL,
-                  font=("Courier New", 9, "bold"), bd=0, relief="flat",
-                  cursor="hand2", padx=5,
-                  activebackground="#3a1010", activeforeground=RED_COL,
-                  command=_close_one).pack(side="right", padx=2)
+            tk.Button(row, text="✕", bg=BG, fg=RED_COL,
+                      font=("Courier New", 9, "bold"), bd=0, relief="flat",
+                      cursor="hand2", padx=5,
+                      activebackground="#3a1010", activeforeground=RED_COL,
+                      command=_close_one).pack(side="right", padx=2)
         self._rows[key] = row
 
     def _remove_row(self, key):
