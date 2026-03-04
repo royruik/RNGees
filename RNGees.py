@@ -20,6 +20,12 @@ except ImportError:
     WIN32 = False
 
 try:
+    from PIL import ImageGrab
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
+
+try:
     import keyboard
     HAS_KEYBOARD = True
 except ImportError:
@@ -148,7 +154,10 @@ class RNGWidget(tk.Toplevel):
         self._off_y = -(self._S + MARGIN)             # negative = up from bottom
         self._drag_moved   = False
         self._drag_start_x = self._drag_start_y = 0
-        self._dragging     = False  # pause tracking while user is dragging
+        self._dragging          = False  # pause tracking while user is dragging
+        self._action_detect     = False  # enable action detection
+        self._prev_sample       = None   # last pixel sample for change detection
+        self._action_triggered  = False  # debounce: prevent re-trigger until reset
         self._resizing     = False
         self._resize_start_x = self._resize_start_y = 0
         self._resize_start_s = 0
@@ -312,9 +321,39 @@ class RNGWidget(tk.Toplevel):
         self.cv.itemconfig(self.num_id, font=("Courier New", fs, "bold"))
         self.cv.coords(self.dot_id, new_s-11, 4, new_s-4, 11)
 
+    # ── ACTION DETECTION ──────────────────────────────
+    def _sample_action_region(self):
+        """Sample a 120x60 region at bottom-right of table.
+        Returns average pixel value tuple (r,g,b) or None."""
+        if not HAS_PIL or not self.hwnd:
+            return None
+        try:
+            r = get_window_rect(self.hwnd)
+            if not r:
+                return None
+            tx, ty, tw, th = r
+            # Sample bottom-right 120x60px — where action buttons appear
+            x1 = tx + tw - 220
+            y1 = ty + th - 90
+            x2 = tx + tw - 20
+            y2 = ty + th - 30
+            img = ImageGrab.grab(bbox=(x1, y1, x2, y2))
+            pixels = list(img.getdata())
+            avg_r = sum(p[0] for p in pixels) // len(pixels)
+            avg_g = sum(p[1] for p in pixels) // len(pixels)
+            avg_b = sum(p[2] for p in pixels) // len(pixels)
+            return (avg_r, avg_g, avg_b)
+        except Exception:
+            return None
+
+    def _pixel_diff(self, a, b):
+        """Sum of absolute differences across RGB channels."""
+        return sum(abs(a[i] - b[i]) for i in range(3))
+
     # ── TRACKING ──────────────────────────────────────
     def _track_loop(self):
-        """Every 250 ms: reposition widget relative to table using stored offset."""
+        """Every 250 ms: reposition widget and check for action detection."""
+        DIFF_THRESHOLD = 15   # min avg channel change to count as "appeared"
         while self._tracking:
             try:
                 if not self._dragging:
@@ -325,6 +364,20 @@ class RNGWidget(tk.Toplevel):
                         wx = tx + self._off_x
                         wy = ty + th + self._off_y
                         self.after(0, self._move_to, wx, wy, new_s)
+
+                # Action detection
+                if self._action_detect and HAS_PIL:
+                    sample = self._sample_action_region()
+                    if sample and self._prev_sample:
+                        diff = self._pixel_diff(sample, self._prev_sample)
+                        if diff >= DIFF_THRESHOLD and not self._action_triggered:
+                            self._action_triggered = True
+                            self.after(0, self.generate)
+                        elif diff < DIFF_THRESHOLD // 2:
+                            # Region settled back — reset so next change triggers again
+                            self._action_triggered = False
+                    self._prev_sample = sample
+
             except Exception:
                 pass
             time.sleep(0.25)
@@ -460,6 +513,11 @@ class RNGWidget(tk.Toplevel):
     def update_settings(self, invert):
         self._invert = invert
 
+    def set_action_detect(self, enabled):
+        self._action_detect    = enabled
+        self._prev_sample      = None
+        self._action_triggered = False
+
 
 # ── CONTROL PANEL ────────────────────────────────────────
 class ControlPanel(tk.Tk):
@@ -484,7 +542,8 @@ class ControlPanel(tk.Tk):
         self._rows: dict      = {}
         self._drawer_open     = False
 
-        self._invert_gradient = tk.BooleanVar(value=False)
+        self._invert_gradient  = tk.BooleanVar(value=False)
+        self._action_detect    = tk.BooleanVar(value=False)
         self._lo_var          = tk.StringVar(value="1")
         self._hi_var          = tk.StringVar(value="100")
         self._interval_var    = tk.StringVar(value="0")
@@ -634,7 +693,8 @@ class ControlPanel(tk.Tk):
                            font=("Courier New", 8), bd=0,
                            command=cmd).pack(anchor="w", pady=1)
 
-        chk("Invert gradient", self._invert_gradient, self._push_settings)
+        chk("Invert gradient",   self._invert_gradient, self._push_settings)
+        chk("Auto-roll on action", self._action_detect,    self._push_action_detect)
 
     def _toggle_drawer(self):
         self._drawer_open = not self._drawer_open
@@ -674,6 +734,17 @@ class ControlPanel(tk.Tk):
         for w in list(self.widgets.values()):
             try: w.update_settings(inv)
             except: pass
+
+    def _push_action_detect(self):
+        enabled = self._action_detect.get()
+        if enabled and not HAS_PIL:
+            self._log("pip install Pillow  → for action detection")
+            self._action_detect.set(False)
+            return
+        for w in list(self.widgets.values()):
+            try: w.set_action_detect(enabled)
+            except: pass
+        self._log(f"Action detection: {'ON' if enabled else 'OFF'}")
 
     # ── HOTKEY ────────────────────────────────────────
     def _bind_hotkey(self):
@@ -789,6 +860,7 @@ class ControlPanel(tk.Tk):
                                 w._start_timer(iv)
                         except Exception:
                             pass
+                        w.set_action_detect(self._action_detect.get())
                         self.widgets[hwnd] = w
                         label = title or f"Table {hwnd}"
                         self.after(0, self._add_row, hwnd, label)
