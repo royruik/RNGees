@@ -1,17 +1,17 @@
 """
-GTO RNG Overlay — Auto-attaches to GGPoker table windows
+RNGees Overlay — Auto-attaches to Online Poker table windows
 Requires: pip install pywin32
 
-Run: python gto_rng.py
+Run: python RNGees.py
 """
 
 import tkinter as tk
 import secrets
 import threading
 import time
-import sys
 import os
 import random
+import ctypes
 
 try:
     import win32gui
@@ -30,26 +30,25 @@ GREEN    = "#2ecc71"
 RED_COL  = "#ff5555"
 BORDER   = "#1e4a30"
 
-# Reference table size — widget scales proportionally to this
 REF_TABLE_W = 560
 REF_TABLE_H = 415
-REF_WIDGET  = 70    # widget size at reference resolution
-MARGIN      = 6     # inset from table corner
+REF_WIDGET  = 60
+MARGIN      = 6
 
 def widget_size_for(tw, th):
-    """Scale widget size proportionally to table size. Min 60, max 160."""
     scale = min(tw / REF_TABLE_W, th / REF_TABLE_H)
-    return max(60, min(160, int(REF_WIDGET * scale)))
+    return max(56, min(160, int(REF_WIDGET * scale)))
 
 def font_size_for(s):
-    """Large number font size relative to widget size."""
-    return max(18, int(s * 0.52))
+    return max(14, int(s * 0.42))
 
-# ── COLOUR GRADIENT: green(low) → gold(mid) → red(high) ──
-def number_color(val, lo, hi):
+# ── COLOUR GRADIENT ──────────────────────────────────────
+def number_color(val, lo, hi, invert=False):
     if hi == lo:
         return GOLD
     t = max(0.0, min(1.0, (val - lo) / (hi - lo)))
+    if invert:
+        t = 1.0 - t
     if t < 0.5:
         s = t * 2
         r = int(0x27 + (0xc9 - 0x27) * s)
@@ -68,7 +67,7 @@ def crypto_rand(lo, hi):
     return lo + secrets.randbelow(hi - lo + 1)
 
 # ── WINDOW DETECTION ─────────────────────────────────────
-MATCH_KEYWORDS   = ["德扑", "体验场", "holdem","NL","$"]
+MATCH_KEYWORDS   = ["德扑", "holdem", "NL", "$"]
 EXCLUDE_KEYWORDS = ["chrome", "firefox", "edge", "claude",
                     "visual studio", "code", "notepad"]
 MIN_W, MIN_H = 400, 300
@@ -103,7 +102,6 @@ def find_poker_windows():
     return results
 
 def get_window_rect(hwnd):
-    """Return (x, y, w, h) for a given hwnd, or None if gone."""
     if not WIN32:
         return None
     try:
@@ -113,33 +111,69 @@ def get_window_rect(hwnd):
     except Exception:
         return None
 
+def get_foreground_hwnd():
+    if not WIN32:
+        return None
+    try:
+        return ctypes.windll.user32.GetForegroundWindow()
+    except Exception:
+        return None
+
+def set_topmost_raw(hwnd_int, topmost):
+    """Set TOPMOST on a raw Win32 HWND."""
+    if not WIN32:
+        return
+    try:
+        HWND_TOPMOST   = -1
+        HWND_NOTOPMOST = -2
+        SWP_NOMOVE     = 0x0002
+        SWP_NOSIZE     = 0x0001
+        SWP_NOACTIVATE = 0x0010
+        ctypes.windll.user32.SetWindowPos(
+            hwnd_int,
+            HWND_TOPMOST if topmost else HWND_NOTOPMOST,
+            0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+        )
+    except Exception:
+        pass
+
 
 # ── RNG WIDGET ───────────────────────────────────────────
 class RNGWidget(tk.Toplevel):
-    def __init__(self, master, hwnd=None, table_title="", tw=560, th=415):
+    def __init__(self, master, hwnd=None, table_title="", tw=560, th=415,
+                 invert_gradient=False):
         super().__init__(master)
-        self.hwnd         = hwnd          # win32 handle to track (None = manual)
-        self.table_title  = table_title
-        self._lo          = 1
-        self._hi          = 100
-        self._rolling     = False
+        self.hwnd           = hwnd
+        self.table_title    = table_title
+        self._lo            = 1
+        self._hi            = 100
+        self._rolling       = False
         self._timer_running = False
-        self._drag_x      = self._drag_y = 0
-        self._tracking    = hwnd is not None
-        self._S           = widget_size_for(tw, th)
+        self._timer_gen    = 0  # increments on each new timer to invalidate old threads
+        self._tracking      = hwnd is not None
+        self._S             = widget_size_for(tw, th)
+        self._invert        = invert_gradient
+
+        # Offset from table's bottom-left corner (in pixels).
+        # User can drag to reposition; offset is preserved across table moves.
+        self._off_x = MARGIN                          # default: bottom-left + margin
+        self._off_y = -(self._S + MARGIN)             # negative = up from bottom
+        self._drag_moved  = False
+        self._drag_start_x = self._drag_start_y = 0
 
         self.overrideredirect(True)
-        self.wm_attributes("-topmost", True)
+        self.wm_attributes("-topmost", False)
         self.wm_attributes("-alpha", 0.93)
         self.configure(bg="#060e09")
-        S = self._S
-        self.geometry(f"{S}x{S}")
+        self.geometry(f"{self._S}x{self._S}")
         self.resizable(False, False)
 
         self._build()
-        self._build_menu()
 
-        # Start position tracking loop if attached to a real window
+        # Generate immediately on spawn — no "?" mark
+        self.after(100, self.generate)
+
         if self._tracking:
             threading.Thread(target=self._track_loop, daemon=True).start()
 
@@ -157,63 +191,59 @@ class RNGWidget(tk.Toplevel):
 
         fs = font_size_for(S)
         self.num_id = self.cv.create_text(
-            S // 2, S // 2, text="?",
+            S // 2, S // 2, text="",
             fill=GOLD, font=("Courier New", fs, "bold"),
             anchor="center"
         )
-
-        # Timer dot — top right
         self.dot_id = self.cv.create_oval(
             S-11, 4, S-4, 11, fill=DIM, outline=""
         )
 
-        self.cv.bind("<ButtonPress-1>",   self._drag_start)
-        self.cv.bind("<B1-Motion>",       self._drag_motion)
-        self.cv.bind("<Double-Button-1>", lambda e: self.generate())
-        self.cv.bind("<Button-3>",        self._show_menu)
+        self.cv.bind("<ButtonPress-1>",   self._on_press)
+        self.cv.bind("<B1-Motion>",       self._on_drag)
+        self.cv.bind("<ButtonRelease-1>", self._on_release)
         self.cv.bind("<Enter>", lambda e: self.cv.itemconfig("bg_rect", outline=GOLD))
         self.cv.bind("<Leave>", lambda e: self.cv.itemconfig("bg_rect", outline=BORDER))
 
-    def _build_menu(self):
-        m = tk.Menu(self, tearoff=0, bg=FELT_MID, fg=CREAM,
-                    activebackground="#254030", activeforeground=GOLD,
-                    font=("Courier New", 9), bd=0, relief="flat")
-        m.add_command(label="▶  Generate",         command=self.generate)
-        m.add_separator()
-        m.add_command(label="⏱  Auto  3 sec",      command=lambda: self._start_timer(3))
-        m.add_command(label="⏱  Auto  5 sec",      command=lambda: self._start_timer(5))
-        m.add_command(label="⏱  Auto 10 sec",      command=lambda: self._start_timer(10))
-        m.add_command(label="⏱  Auto 30 sec",      command=lambda: self._start_timer(30))
-        m.add_command(label="⏹  Stop Timer",       command=self.stop_timer)
-        m.add_separator()
-        m.add_command(label="⚙  Set Range…",       command=self._range_dialog)
-        m.add_separator()
-        m.add_command(label="✕  Close",            command=self.destroy)
-        self._menu = m
+    # ── Z-ORDER ───────────────────────────────────────
+    def _sync_zorder(self):
+        """Topmost only when the poker table is the foreground window."""
+        if not WIN32:
+            return
+        try:
+            fg           = get_foreground_hwnd()
+            table_active = (fg == self.hwnd) if self.hwnd else True
+            wid          = self.winfo_id()
+            set_topmost_raw(wid, table_active)
+            self.wm_attributes("-topmost", table_active)
+        except Exception:
+            pass
 
-    def _show_menu(self, e):
-        self._menu.tk_popup(e.x_root, e.y_root)
-
-    # ── POSITION TRACKING ─────────────────────────────
+    # ── TRACKING ──────────────────────────────────────
     def _track_loop(self):
-        """Follow the table window as it moves."""
+        """Every 250 ms: reposition widget relative to table using stored offset."""
         while self._tracking:
             try:
                 r = get_window_rect(self.hwnd)
                 if r:
                     tx, ty, tw, th = r
-                    S  = widget_size_for(tw, th)
-                    wx = tx + MARGIN                   # bottom-left X
-                    wy = ty + th - S - MARGIN          # bottom-left Y
-                    self.after(0, self._move_to, wx, wy, S)
+                    new_s = widget_size_for(tw, th)
+                    # Widget position = table bottom-left + offset
+                    wx = tx + self._off_x
+                    wy = ty + th + self._off_y
+                    self.after(0, self._move_to, wx, wy, new_s)
+                    self.after(0, self._sync_zorder)
             except Exception:
                 pass
-            time.sleep(0.25)   # track at 4 Hz — smooth enough, low CPU
+            time.sleep(0.25)
 
     def _move_to(self, wx, wy, new_s):
         try:
             if new_s != self._S:
-                # Table was resized — rebuild widget at new size
+                # Rescale offset proportionally
+                ratio = new_s / self._S
+                self._off_x = int(self._off_x * ratio)
+                self._off_y = int(self._off_y * ratio)
                 self._S = new_s
                 self.cv.destroy()
                 self.geometry(f"{new_s}x{new_s}")
@@ -235,7 +265,7 @@ class RNGWidget(tk.Toplevel):
                                    text=str(crypto_rand(lo, hi)), fill=DIM)
                 time.sleep(0.045)
             final = crypto_rand(lo, hi)
-            col   = number_color(final, lo, hi)
+            col   = number_color(final, lo, hi, invert=self._invert)
             self.cv.itemconfig(self.num_id, text=str(final), fill=col)
             self._rolling = False
             self._flash(col)
@@ -248,76 +278,69 @@ class RNGWidget(tk.Toplevel):
 
     # ── TIMER ─────────────────────────────────────────
     def _start_timer(self, secs):
-        self.stop_timer()
+        self._timer_gen += 1          # invalidate any running old threads
+        my_gen = self._timer_gen
         self._timer_running = True
-        self.cv.itemconfig(self.dot_id, fill=GREEN)
-        def _loop():
+        try: self.cv.itemconfig(self.dot_id, fill=GREEN)
+        except: pass
+        def _loop2():
             self.generate()
-            while self._timer_running:
-                time.sleep(secs)
-                if self._timer_running:
-                    self.generate()
-        threading.Thread(target=_loop, daemon=True).start()
+            elapsed = 0.0
+            while self._timer_running and self._timer_gen == my_gen:
+                time.sleep(0.1)
+                elapsed += 0.1
+                if elapsed >= secs:
+                    if self._timer_running and self._timer_gen == my_gen:
+                        self.generate()
+                    elapsed = 0.0
+        threading.Thread(target=_loop2, daemon=True).start()
 
     def stop_timer(self):
+        self._timer_gen += 1        # invalidate any running timer thread immediately
         self._timer_running = False
-        self.cv.itemconfig(self.dot_id, fill=DIM)
+        try:
+            self.cv.itemconfig(self.dot_id, fill=DIM)
+        except Exception:
+            pass
 
-    # ── RANGE DIALOG ──────────────────────────────────
-    def _range_dialog(self):
-        S = self._S
-        d = tk.Toplevel(self)
-        d.configure(bg=FELT)
-        d.overrideredirect(True)
-        d.wm_attributes("-topmost", True)
-        d.geometry(f"190x100+{self.winfo_x() + S + 4}+{self.winfo_y()}")
+    # ── DRAG — updates offset, tracking stays active ──
+    def _on_press(self, e):
+        self._drag_moved   = False
+        self._drag_start_x = e.x_root
+        self._drag_start_y = e.y_root
+        # Snapshot of widget position at drag start
+        self._drag_win_x   = self.winfo_x()
+        self._drag_win_y   = self.winfo_y()
 
-        tk.Label(d, text="SET RANGE", bg=FELT, fg=GOLD,
-                 font=("Courier New", 9, "bold")).pack(pady=(10, 6))
-        row = tk.Frame(d, bg=FELT)
-        row.pack()
-        lo_v = tk.StringVar(value=str(self._lo))
-        hi_v = tk.StringVar(value=str(self._hi))
+    def _on_drag(self, e):
+        self._drag_moved = True
+        dx = e.x_root - self._drag_start_x
+        dy = e.y_root - self._drag_start_y
+        self.geometry(f"+{self._drag_win_x + dx}+{self._drag_win_y + dy}")
 
-        def _entry(parent, var):
-            return tk.Entry(parent, textvariable=var, width=5, bg=BG, fg=CREAM,
-                            font=("Courier New", 10), bd=0, insertbackground=CREAM,
-                            justify="center", highlightthickness=1,
-                            highlightbackground=BORDER)
-
-        tk.Label(row, text="MIN", bg=FELT, fg=DIM,
-                 font=("Courier New", 8)).pack(side="left", padx=3)
-        _entry(row, lo_v).pack(side="left")
-        tk.Label(row, text="MAX", bg=FELT, fg=DIM,
-                 font=("Courier New", 8)).pack(side="left", padx=3)
-        _entry(row, hi_v).pack(side="left")
-
-        def _apply():
-            try:
-                self._lo, self._hi = int(lo_v.get()), int(hi_v.get())
-            except ValueError:
-                pass
-            d.destroy()
-
-        tk.Button(d, text="APPLY", bg=FELT_MID, fg=GOLD,
-                  font=("Courier New", 9, "bold"), bd=0, relief="flat",
-                  pady=4, command=_apply).pack(fill="x", padx=14, pady=8)
-        d.bind("<Return>", lambda e: _apply())
-        d.bind("<Escape>", lambda e: d.destroy())
-
-    # ── DRAG (manual widgets only) ────────────────────
-    def _drag_start(self, e):
-        self._tracking = False   # detach from table when manually dragged
-        self._drag_x = e.x_root - self.winfo_x()
-        self._drag_y = e.y_root - self.winfo_y()
-
-    def _drag_motion(self, e):
-        self.geometry(f"+{e.x_root - self._drag_x}+{e.y_root - self._drag_y}")
+    def _on_release(self, e):
+        if not self._drag_moved:
+            # Pure click → generate
+            self.generate()
+        else:
+            # Update stored offset so tracking locks to new position
+            if self.hwnd:
+                r = get_window_rect(self.hwnd)
+                if r:
+                    tx, ty, tw, th = r
+                    # New offset = current widget position relative to table bottom-left
+                    self._off_x = self.winfo_x() - tx
+                    self._off_y = self.winfo_y() - (ty + th)
+            # If no table (manual widget), just stay where it is
 
     def destroy(self):
-        self._tracking = False
+        self._tracking      = False
         self._timer_running = False
+        self._timer_gen += 1
         super().destroy()
+
+    def update_settings(self, invert):
+        self._invert = invert
 
 
 # ── CONTROL PANEL ────────────────────────────────────────
@@ -325,64 +348,85 @@ class ControlPanel(tk.Tk):
     def __init__(self):
         super().__init__()
 
-        # Normal OS window — taskbar icon, real minimize & close buttons
-        self.title("GTO RNG")
+        self.title("RNGees")
         self.configure(bg=BG)
         self.resizable(False, False)
-        self.geometry("360x460")
+        self.geometry("320x420")
         self.protocol("WM_DELETE_WINDOW", self._quit)
-        self.wm_attributes("-topmost", False)   # NOT always-on-top
+        self.wm_attributes("-topmost", False)
 
         self.update_idletasks()
         sw = self.winfo_screenwidth()
         sh = self.winfo_screenheight()
-        self.geometry(f"+{sw//2 - 180}+{sh//2 - 230}")
+        self.geometry(f"+{sw//2 - 160}+{sh//2 - 210}")
 
-        self.widgets: dict = {}
-        self._manual_n    = 0
-        self._scan_active = True
-        self._rows: dict  = {}
+        self.widgets: dict    = {}
+        self._manual_n        = 0
+        self._scan_active     = True
+        self._rows: dict      = {}
+        self._drawer_open     = False
+
+        self._invert_gradient = tk.BooleanVar(value=True)
+        self._lo_var          = tk.StringVar(value="1")
+        self._hi_var          = tk.StringVar(value="100")
+        self._interval_var    = tk.StringVar(value="0")
+        self._hotkey_var      = tk.StringVar(value="v")
+        self._hotkey_bound    = None
 
         self._build()
+        self._bind_hotkey()
 
         if WIN32:
-            self._log("Scanning for GGPoker table windows…")
-            self._log("Keywords: 德扑 / 体验场 / holdem")
+            self._log("Scanning for poker tables…")
             threading.Thread(target=self._scan_loop, daemon=True).start()
         else:
             self._log("pywin32 not found — manual mode only.")
             self._log("Install:  pip install pywin32")
 
-    # ── UI ────────────────────────────────────────────
+    # ── BUILD ─────────────────────────────────────────
     def _build(self):
+        # Header
         hdr = tk.Frame(self, bg=FELT_MID, height=50)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
-
-        tk.Label(hdr, text="GTO  RNG", bg=FELT_MID, fg=GOLD,
+        tk.Label(hdr, text="RNGees", bg=FELT_MID, fg=GOLD,
                  font=("Courier New", 14, "bold"), padx=14).pack(side="left", pady=12)
-
         self._status_lbl = tk.Label(hdr, text="idle", bg=FELT_MID, fg=DIM,
                                     font=("Courier New", 7))
         self._status_lbl.pack(side="left")
 
-        btn_row = tk.Frame(self, bg=BG, pady=10)
+        # ── BUTTONS + SETTINGS DRAWER ────────────────
+        tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
+
+        btn_row = tk.Frame(self, bg=BG, pady=8)
         btn_row.pack(fill="x", padx=12)
 
-        def abtn(label, color, cmd):
-            tk.Button(btn_row, text=label, bg=FELT_MID, fg=color,
-                      font=("Courier New", 9, "bold"), bd=0, relief="flat",
-                      cursor="hand2", padx=10, pady=7,
-                      activebackground="#254030", activeforeground=GOLD,
-                      command=cmd).pack(side="left", padx=3)
+        tk.Button(btn_row, text="+ ADD", bg=FELT_MID, fg=GOLD,
+                  font=("Courier New", 9, "bold"), bd=0, relief="flat",
+                  cursor="hand2", padx=10, pady=7,
+                  activebackground="#254030", activeforeground=GOLD,
+                  command=self._add_manual).pack(side="left", padx=3)
 
-        abtn("+ ADD",   GOLD,  self._add_manual)
-        abtn("⚡ ALL",  CREAM, self._gen_all)
-        abtn("⏹ STOP", DIM,   self._stop_all)
+        self._drawer_arrow = tk.Button(btn_row, text="⚙ SETTINGS",
+                                       bg=FELT_MID, fg=DIM,
+                                       font=("Courier New", 9, "bold"),
+                                       bd=0, relief="flat", cursor="hand2",
+                                       padx=10, pady=7,
+                                       activebackground="#254030",
+                                       activeforeground=GOLD,
+                                       command=self._toggle_drawer)
+        self._drawer_arrow.pack(side="left", padx=3)
+
+        # Drawer body (hidden by default)
+        tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
+        self._drawer_body = tk.Frame(self, bg=BG)
+        self._build_drawer(self._drawer_body)
 
         tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
+
+        # ── WIDGET LIST ───────────────────────────────
         tk.Label(self, text="  ACTIVE WIDGETS", bg=BG, fg=DIM,
-                 font=("Courier New", 8), anchor="w", pady=6).pack(fill="x")
+                 font=("Courier New", 8), anchor="w", pady=4).pack(fill="x")
         tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
 
         list_outer = tk.Frame(self, bg=BG)
@@ -393,23 +437,133 @@ class ControlPanel(tk.Tk):
                           command=self._list_canvas.yview,
                           bg=FELT_MID, troughcolor=BG, bd=0, relief="flat")
         self._inner = tk.Frame(self._list_canvas, bg=BG)
-        self._inner.bind(
-            "<Configure>",
-            lambda e: self._list_canvas.configure(
-                scrollregion=self._list_canvas.bbox("all"))
-        )
+        self._inner.bind("<Configure>",
+                         lambda e: self._list_canvas.configure(
+                             scrollregion=self._list_canvas.bbox("all")))
         self._list_canvas.create_window((0, 0), window=self._inner, anchor="nw")
         self._list_canvas.configure(yscrollcommand=sb.set)
         self._list_canvas.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
 
+        # Log
         tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
-        self._log_box = tk.Text(
-            self, height=5, bg="#050d08", fg=DIM,
-            font=("Courier New", 7), bd=0, state="disabled",
-            padx=8, pady=6, relief="flat", insertbackground=GOLD
-        )
+        self._log_box = tk.Text(self, height=4, bg="#050d08", fg=DIM,
+                                font=("Courier New", 7), bd=0, state="disabled",
+                                padx=8, pady=6, relief="flat",
+                                insertbackground=GOLD)
         self._log_box.pack(fill="x")
+
+    def _build_drawer(self, parent):
+        """Build the settings fields inside the drawer frame."""
+        sf = tk.Frame(parent, bg=BG, padx=16, pady=6)
+        sf.pack(fill="x")
+
+        def entry_row(label, var, suffix="", on_change=None):
+            row = tk.Frame(sf, bg=BG)
+            row.pack(fill="x", pady=2)
+            tk.Label(row, text=label, bg=BG, fg=CREAM,
+                     font=("Courier New", 9), width=10, anchor="w").pack(side="left")
+            e = tk.Entry(row, textvariable=var, width=5, bg=FELT_MID, fg=CREAM,
+                         font=("Courier New", 9), bd=0, insertbackground=CREAM,
+                         justify="center", highlightthickness=1,
+                         highlightbackground=BORDER)
+            e.pack(side="left")
+            cmd = on_change or self._apply_settings
+            e.bind("<FocusOut>", lambda ev: cmd())
+            e.bind("<Return>",   lambda ev: cmd())
+            if suffix:
+                tk.Label(row, text=f" {suffix}", bg=BG, fg=DIM,
+                         font=("Courier New", 9)).pack(side="left")
+
+        # Range: two entries on same row
+        rng_row = tk.Frame(sf, bg=BG)
+        rng_row.pack(fill="x", pady=2)
+        tk.Label(rng_row, text="Range", bg=BG, fg=CREAM,
+                 font=("Courier New", 9), width=10, anchor="w").pack(side="left")
+        for var, sep in [(self._lo_var, " - "), (self._hi_var, "")]:
+            e = tk.Entry(rng_row, textvariable=var, width=5, bg=FELT_MID, fg=CREAM,
+                         font=("Courier New", 9), bd=0, insertbackground=CREAM,
+                         justify="center", highlightthickness=1,
+                         highlightbackground=BORDER)
+            e.pack(side="left")
+            e.bind("<FocusOut>", lambda ev: self._apply_settings())
+            e.bind("<Return>",   lambda ev: self._apply_settings())
+            if sep:
+                tk.Label(rng_row, text=sep, bg=BG, fg=DIM,
+                         font=("Courier New", 9)).pack(side="left")
+
+        entry_row("Interval", self._interval_var, "seconds")
+        entry_row("Hotkey",   self._hotkey_var,   on_change=self._bind_hotkey)
+
+        # Checkboxes
+        chk_f = tk.Frame(sf, bg=BG)
+        chk_f.pack(fill="x", pady=(4, 0))
+
+        def chk(text, var, cmd=None):
+            tk.Checkbutton(chk_f, text=text, variable=var,
+                           bg=BG, fg=CREAM, selectcolor=FELT_MID,
+                           activebackground=BG, activeforeground=GOLD,
+                           font=("Courier New", 8), bd=0,
+                           command=cmd).pack(anchor="w", pady=1)
+
+        chk("Invert gradient", self._invert_gradient, self._push_settings)
+
+    def _toggle_drawer(self):
+        self._drawer_open = not self._drawer_open
+        if self._drawer_open:
+            self._drawer_body.pack(fill="x")
+            self._drawer_arrow.configure(text="⚙ SETTINGS ▼", fg=GOLD)
+            self.geometry("320x580")
+        else:
+            self._drawer_body.pack_forget()
+            self._drawer_arrow.configure(text="⚙ SETTINGS", fg=DIM)
+            self.geometry("320x420")
+
+    # ── SETTINGS ──────────────────────────────────────
+    def _apply_settings(self):
+        try:
+            lo = int(self._lo_var.get())
+            hi = int(self._hi_var.get())
+        except ValueError:
+            return
+        try:
+            interval = int(self._interval_var.get())
+        except ValueError:
+            interval = 0
+        for w in list(self.widgets.values()):
+            try:
+                w._lo = lo
+                w._hi = hi
+                if interval > 0:
+                    w._start_timer(interval)
+                else:
+                    w.stop_timer()
+            except Exception:
+                pass
+
+    def _push_settings(self):
+        inv = self._invert_gradient.get()
+        for w in list(self.widgets.values()):
+            try: w.update_settings(inv)
+            except: pass
+
+    # ── HOTKEY ────────────────────────────────────────
+    def _bind_hotkey(self):
+        key = self._hotkey_var.get().strip().lower()
+        if not key:
+            return
+        try:
+            if self._hotkey_bound:
+                self.unbind_all(f"<Key-{self._hotkey_bound}>")
+        except Exception:
+            pass
+        self._hotkey_bound = key
+        self.bind_all(f"<Key-{key}>", self._on_hotkey)
+        self._log(f"Hotkey: '{key}'")
+
+    def _on_hotkey(self, event=None):
+        self._apply_settings()
+        self._gen_all()
 
     # ── HELPERS ───────────────────────────────────────
     def _log(self, msg):
@@ -432,17 +586,10 @@ class ControlPanel(tk.Tk):
     def _add_row(self, key, title):
         row = tk.Frame(self._inner, bg=FELT, pady=5, padx=8)
         row.pack(fill="x", pady=2, padx=6)
-
         tk.Label(row, text="●", bg=FELT, fg=GREEN,
                  font=("Courier New", 8)).pack(side="left", padx=(0, 6))
         tk.Label(row, text=title[:26], bg=FELT, fg=CREAM,
                  font=("Courier New", 8), anchor="w").pack(side="left")
-
-        def _focus():
-            w = self.widgets.get(key)
-            if w:
-                try: w.lift(); w.deiconify()
-                except: pass
 
         def _close_one():
             w = self.widgets.get(key)
@@ -453,17 +600,11 @@ class ControlPanel(tk.Tk):
             self._remove_row(key)
             self._refresh_status()
 
-        tk.Button(row, text="focus", bg=BG, fg=DIM,
-                  font=("Courier New", 7), bd=0, relief="flat",
-                  cursor="hand2", padx=5,
-                  activebackground="#254030", activeforeground=GOLD,
-                  command=_focus).pack(side="right", padx=2)
         tk.Button(row, text="✕", bg=BG, fg=RED_COL,
                   font=("Courier New", 9, "bold"), bd=0, relief="flat",
                   cursor="hand2", padx=5,
                   activebackground="#3a1010", activeforeground=RED_COL,
                   command=_close_one).pack(side="right", padx=2)
-
         self._rows[key] = row
 
     def _remove_row(self, key):
@@ -478,7 +619,6 @@ class ControlPanel(tk.Tk):
                 found     = find_poker_windows()
                 found_map = {hw: (t, x, y, w, h) for hw, t, x, y, w, h in found}
 
-                # Remove closed tables
                 gone = [k for k in list(self.widgets)
                         if isinstance(k, int) and k not in found_map]
                 for k in gone:
@@ -488,15 +628,24 @@ class ControlPanel(tk.Tk):
                     self.after(0, self._remove_row, k)
                     self.after(0, self._log, "Table closed — widget removed")
 
-                # Attach to new tables
                 for hwnd, (title, tx, ty, tw, th) in found_map.items():
                     if hwnd not in self.widgets:
                         S  = widget_size_for(tw, th)
                         wx = tx + MARGIN
-                        wy = ty + th - S - MARGIN      # bottom-left corner
+                        wy = ty + th - S - MARGIN
                         w  = RNGWidget(self, hwnd=hwnd,
-                                       table_title=title, tw=tw, th=th)
+                                       table_title=title, tw=tw, th=th,
+                                       invert_gradient=self._invert_gradient.get())
                         w.geometry(f"+{wx}+{wy}")
+                        # Apply current settings
+                        try:
+                            w._lo = int(self._lo_var.get())
+                            w._hi = int(self._hi_var.get())
+                            iv = int(self._interval_var.get())
+                            if iv > 0:
+                                w._start_timer(iv)
+                        except Exception:
+                            pass
                         self.widgets[hwnd] = w
                         label = title or f"Table {hwnd}"
                         self.after(0, self._add_row, hwnd, label)
@@ -518,25 +667,18 @@ class ControlPanel(tk.Tk):
         sh    = self.winfo_screenheight()
         ox    = sw // 2 + random.randint(-200, 200)
         oy    = sh // 2 + random.randint(-80, 80)
-        w = RNGWidget(self, hwnd=None, table_title=title)
+        w = RNGWidget(self, hwnd=None, table_title=title,
+                      invert_gradient=self._invert_gradient.get())
         w.geometry(f"+{ox}+{oy}")
         self.widgets[key] = w
         self._add_row(key, title)
-        self._log(f"Added manual widget: {title}")
+        self._log(f"Added: {title}")
         self._refresh_status()
 
-    # ── GLOBAL ACTIONS ────────────────────────────────
     def _gen_all(self):
         for w in list(self.widgets.values()):
             try: w.generate()
             except: pass
-        self._log("Generated all")
-
-    def _stop_all(self):
-        for w in list(self.widgets.values()):
-            try: w.stop_timer()
-            except: pass
-        self._log("Stopped all timers")
 
     def _quit(self):
         self._scan_active = False
@@ -552,7 +694,6 @@ if __name__ == "__main__":
     if not WIN32:
         print("=" * 55)
         print("  pywin32 not found — running in MANUAL mode.")
-        print("  To enable auto-detection of GGPoker tables:")
-        print("    pip install pywin32")
+        print("  pip install pywin32  for auto-detection.")
         print("=" * 55)
     ControlPanel().mainloop()
