@@ -31,6 +31,16 @@ try:
 except ImportError:
     HAS_KEYBOARD = False
 
+# ── DPI SCALING ──────────────────────────────────────────
+def get_dpi_scale():
+    try:
+        dpi = ctypes.windll.user32.GetDpiForSystem()
+        return dpi / 96.0
+    except Exception:
+        return 1.0
+
+DPI_SCALE = get_dpi_scale()
+
 # ── THEME ────────────────────────────────────────────────
 BG       = "#0a1a10"
 FELT     = "#0d2818"
@@ -103,6 +113,8 @@ def find_poker_windows():
     def _cb(hwnd, _):
         if not win32gui.IsWindowVisible(hwnd):
             return
+        if win32gui.GetParent(hwnd) != 0:
+            return
         title = win32gui.GetWindowText(hwnd).strip()
         if not title:
             return
@@ -117,12 +129,15 @@ def find_poker_windows():
     win32gui.EnumWindows(_cb, None)
     return results
 
-def get_window_rect(hwnd):
+def get_window_rect(hwnd, physical=False):
     if not WIN32:
         return None
     try:
         rect = win32gui.GetWindowRect(hwnd)
         x, y, x2, y2 = rect
+        if physical:
+            s = DPI_SCALE
+            return int(x*s), int(y*s), int((x2-x)*s), int((y2-y)*s)
         return x, y, x2 - x, y2 - y
     except Exception:
         return None
@@ -322,30 +337,56 @@ class RNGWidget(tk.Toplevel):
         self.cv.coords(self.dot_id, new_s-11, 4, new_s-4, 11)
 
     # ── ACTION DETECTION ──────────────────────────────
+    ACTION_X  = 0.45
+    ACTION_Y1 = 0.85
+    ACTION_Y2 = 1.00
+
+    def _get_tk_rect(self):
+        """Get the table window rect using DwmGetWindowAttribute which returns
+        the real visible rect without the invisible shadow border."""
+        if not WIN32 or not self.hwnd:
+            return None
+        try:
+            import ctypes
+            DWMWA_EXTENDED_FRAME_BOUNDS = 9
+            rect = ctypes.wintypes.RECT()
+            ctypes.windll.dwmapi.DwmGetWindowAttribute(
+                self.hwnd, DWMWA_EXTENDED_FRAME_BOUNDS,
+                ctypes.byref(rect), ctypes.sizeof(rect))
+            x, y = rect.left, rect.top
+            w, h = rect.right - rect.left, rect.bottom - rect.top
+            s = DPI_SCALE
+            return int(x*s), int(y*s), int(w*s), int(h*s)
+        except Exception:
+            return get_window_rect(self.hwnd, physical=True)
+
     def _sample_action_region(self):
-        """Sample a 120x60 region at bottom-right of table.
-        Returns average pixel value tuple (r,g,b) or None."""
+        """Sample action button region using DWM real window bounds."""
         if not HAS_PIL or not self.hwnd:
             return None
         try:
-            r = get_window_rect(self.hwnd)
+            r = self._get_tk_rect()
             if not r:
                 return None
             tx, ty, tw, th = r
-            # Sample bottom-right 120x60px — where action buttons appear
-            x1 = tx + tw - 220
-            y1 = ty + th - 90
-            x2 = tx + tw - 20
-            y2 = ty + th - 30
+            x1 = tx + int(tw * self.ACTION_X)
+            y1 = ty + int(th * self.ACTION_Y1)
+            x2 = tx + tw
+            y2 = ty + int(th * self.ACTION_Y2)
             img = ImageGrab.grab(bbox=(x1, y1, x2, y2))
+            if not hasattr(self, "_debug_saved"):
+                img.save("debug_sample.png")
+                self._debug_saved = True
             pixels = list(img.getdata())
+            if not pixels:
+                return None
             avg_r = sum(p[0] for p in pixels) // len(pixels)
             avg_g = sum(p[1] for p in pixels) // len(pixels)
             avg_b = sum(p[2] for p in pixels) // len(pixels)
             return (avg_r, avg_g, avg_b)
-        except Exception:
+        except Exception as e:
+            print(f"[GRAB ERROR] {e}")
             return None
-
     def _pixel_diff(self, a, b):
         """Sum of absolute differences across RGB channels."""
         return sum(abs(a[i] - b[i]) for i in range(3))
@@ -353,7 +394,15 @@ class RNGWidget(tk.Toplevel):
     # ── TRACKING ──────────────────────────────────────
     def _track_loop(self):
         """Every 250 ms: reposition widget and check for action detection."""
-        DIFF_THRESHOLD = 15   # min avg channel change to count as "appeared"
+        # Threshold: avg channel diff to count as meaningful change
+        # High enough to ignore drag/shake, low enough to catch button appearance
+        DIFF_THRESHOLD  = 40
+        CONFIRM_FRAMES  = 1   # fire on first changed frame
+        SETTLE_FRAMES   = 3
+
+        changed_count   = 0
+        settled_count   = 0
+
         while self._tracking:
             try:
                 if not self._dragging:
@@ -365,18 +414,49 @@ class RNGWidget(tk.Toplevel):
                         wy = ty + th + self._off_y
                         self.after(0, self._move_to, wx, wy, new_s)
 
-                # Action detection
+                # ── Action detection ──────────────────────
                 if self._action_detect and HAS_PIL:
                     sample = self._sample_action_region()
-                    if sample and self._prev_sample:
-                        diff = self._pixel_diff(sample, self._prev_sample)
-                        if diff >= DIFF_THRESHOLD and not self._action_triggered:
-                            self._action_triggered = True
-                            self.after(0, self.generate)
-                        elif diff < DIFF_THRESHOLD // 2:
-                            # Region settled back — reset so next change triggers again
-                            self._action_triggered = False
-                    self._prev_sample = sample
+                    if sample:
+                        if self._prev_sample is None:
+                            self._prev_sample = sample
+                        else:
+                            diff = self._pixel_diff(sample, self._prev_sample)
+                            if not self._action_triggered:
+                                if diff >= DIFF_THRESHOLD:
+                                    # Only trigger if region got BRIGHTER (buttons appearing)
+                                    # sum of sample channels > sum of baseline channels
+                                    sample_brightness  = sum(sample)
+                                    baseline_brightness = sum(self._prev_sample)
+                                    if sample_brightness > baseline_brightness:
+                                        changed_count += 1
+                                        if changed_count >= CONFIRM_FRAMES:
+                                            self._action_triggered = True
+                                            changed_count = 0
+                                            print(f"[ACTION] triggered diff={diff} brighter={sample_brightness-baseline_brightness}")
+                                            self.after(0, self.generate)
+                                    else:
+                                        # Got darker — buttons disappearing, ignore
+                                        changed_count = 0
+                                        self._prev_sample = tuple(
+                                            int(self._prev_sample[i]*0.85 + sample[i]*0.15)
+                                            for i in range(3)
+                                        )
+                                else:
+                                    changed_count = 0
+                                    self._prev_sample = tuple(
+                                        int(self._prev_sample[i]*0.85 + sample[i]*0.15)
+                                        for i in range(3)
+                                    )
+                            else:
+                                if diff < DIFF_THRESHOLD // 2:
+                                    settled_count += 1
+                                    if settled_count >= SETTLE_FRAMES:
+                                        self._action_triggered = False
+                                        settled_count = 0
+                                        print(f"[RESET] settled diff={diff}")
+                                else:
+                                    settled_count = 0
 
             except Exception:
                 pass
@@ -527,14 +607,14 @@ class ControlPanel(tk.Tk):
         self.title("RNGees")
         self.configure(bg=BG)
         self.resizable(False, False)
-        self.geometry("320x420")
+        self.geometry("340x420")
         self.protocol("WM_DELETE_WINDOW", self._quit)
         self.wm_attributes("-topmost", False)
 
         self.update_idletasks()
         sw = self.winfo_screenwidth()
         sh = self.winfo_screenheight()
-        self.geometry(f"+{sw//2 - 160}+{sh//2 - 210}")
+        self.geometry(f"+{sw//2 - 170}+{sh//2 - 210}")
 
         self.widgets: dict    = {}
         self._manual_n        = 0
@@ -701,11 +781,11 @@ class ControlPanel(tk.Tk):
         if self._drawer_open:
             self._drawer_body.pack(fill="x")
             self._drawer_arrow.configure(text="⚙ SETTINGS ▼", fg=GOLD)
-            self.geometry("320x580")
+            self.geometry("340x600")
         else:
             self._drawer_body.pack_forget()
             self._drawer_arrow.configure(text="⚙ SETTINGS", fg=DIM)
-            self.geometry("320x420")
+            self.geometry("340x420")
 
     # ── SETTINGS ──────────────────────────────────────
     def _apply_settings(self):
