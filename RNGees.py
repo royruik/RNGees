@@ -337,7 +337,7 @@ class RNGWidget(tk.Toplevel):
         self.cv.coords(self.dot_id, new_s-11, 4, new_s-4, 11)
 
     # ── ACTION DETECTION ──────────────────────────────
-    ACTION_X  = 0.45
+    ACTION_X  = 0.65
     ACTION_Y1 = 0.85
     ACTION_Y2 = 1.00
 
@@ -597,6 +597,12 @@ class RNGWidget(tk.Toplevel):
         self._action_detect    = enabled
         self._prev_sample      = None
         self._action_triggered = False
+        # Show green dot when action detection is on (same as timer)
+        if enabled:
+            self.cv.itemconfig(self.dot_id, fill=GREEN)
+        elif not self._rolling:
+            # Only dim if timer isn't keeping it green
+            self.cv.itemconfig(self.dot_id, fill=DIM)
 
 
 # ── CONTROL PANEL ────────────────────────────────────────
@@ -824,7 +830,6 @@ class ControlPanel(tk.Tk):
         for w in list(self.widgets.values()):
             try: w.set_action_detect(enabled)
             except: pass
-        self._log(f"Action detection: {'ON' if enabled else 'OFF'}")
 
     # ── HOTKEY ────────────────────────────────────────
     def _bind_hotkey(self):
