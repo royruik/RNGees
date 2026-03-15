@@ -8,7 +8,7 @@ A lightweight GTO randomization overlay for online poker. RNGees sits on top of 
 
 ## Features
 
-- **Auto-attaches** to poker table windows by title keyword 
+- **Auto-attaches** to poker table windows by title keyword (`德扑`, `holdem`, `NL`, `$`)
 - **Three roll modes** — mutually exclusive:
   - **Manual** — roll on hotkey press
   - **Interval** — auto-roll every N seconds
@@ -21,25 +21,57 @@ A lightweight GTO randomization overlay for online poker. RNGees sits on top of 
 
 ---
 
-## Requirements
+## Download
 
+Grab the latest `RNGees.exe` from [Releases](/Releases) — no Python required.
+
+> After building locally, the executable is at `Realeases\RNGees.exe`.
+
+---
+
+## Run from Source
+
+**Requirements**
 ```
-pip install pywin32 Pillow keyboard
+pip install -r requirements.txt
 ```
 
 > `pywin32` — window detection and positioning  
 > `Pillow` — screen capture for action detection  
 > `keyboard` — global hotkey (works even when poker client is focused)
 
----
-
-## Usage
-
+**Launch**
+```
+run.bat
+```
+or
 ```
 python RNGees.py
 ```
 
 RNGees will automatically detect any open poker table window and attach a widget to it. Open the **Settings** drawer to configure range, mode, hotkey, and gradient.
+
+---
+
+## Build Executable
+
+To build a standalone `RNGees.exe`:
+
+```
+build.bat
+```
+
+Output: `dist\RNGees.exe` — this is the only file you need to share or run. The `build\` folder and `RNGees.spec` are build artifacts and can be ignored or deleted.
+
+```
+RNGees├── dist│   └── RNGees.exe      ← this is the executable
+├── build\              ← safe to delete
+├── RNGees.spec         ← safe to delete
+├── rngees_config.json  ← settings, auto-created on first run
+└── ...
+```
+
+> **Note:** Some antivirus software may flag PyInstaller executables as suspicious. This is a known false positive. Build from source if preferred.
 
 ---
 
@@ -70,4 +102,4 @@ python MockTable.py
 ## Notes
 
 - Overlay is display-only and does not interact with the game client in any way
-- Tested on GGPoker.ca and worked fine
+- Tested on GGPoker.ca

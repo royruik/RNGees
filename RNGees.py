@@ -10,8 +10,10 @@ import secrets
 import threading
 import time
 import os
+import sys
 import random
 import ctypes
+import json
 
 try:
     import win32gui
@@ -40,6 +42,29 @@ def get_dpi_scale():
         return 1.0
 
 DPI_SCALE = get_dpi_scale()
+
+# ── CONFIG ───────────────────────────────────────────────
+# When frozen by PyInstaller, save config next to the .exe
+# When running as .py, save next to the script
+if getattr(sys, "frozen", False):
+    _base_dir = os.path.dirname(sys.executable)
+else:
+    _base_dir = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(_base_dir, "rngees_config.json")
+
+def load_config():
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_config(data):
+    try:
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
 
 # ── FONT ─────────────────────────────────────────────────
 def best_mono():
@@ -653,17 +678,19 @@ class ControlPanel(tk.Tk):
         self._rows: dict      = {}
         self._drawer_open     = False
 
-        self._invert_gradient  = tk.BooleanVar(value=False)
+        cfg = load_config()
+        self._invert_gradient  = tk.BooleanVar(value=cfg.get("invert_gradient", False))
         self._action_detect    = tk.BooleanVar(value=False)
-        self._mode_var         = tk.StringVar(value="manual")
-        self._lo_var          = tk.StringVar(value="1")
-        self._hi_var          = tk.StringVar(value="100")
-        self._interval_var    = tk.StringVar(value="0")
-        self._hotkey_var      = tk.StringVar(value="v")
+        self._mode_var         = tk.StringVar(value=cfg.get("mode", "manual"))
+        self._lo_var          = tk.StringVar(value=str(cfg.get("lo", 1)))
+        self._hi_var          = tk.StringVar(value=str(cfg.get("hi", 100)))
+        self._interval_var    = tk.StringVar(value=str(cfg.get("interval", 0)))
+        self._hotkey_var      = tk.StringVar(value=cfg.get("hotkey", "v"))
         self._hotkey_bound    = None
 
         self._build()
         self._bind_hotkey()
+        self.after(200, self._apply_mode)
         # Clicking anywhere outside an entry defocuses it (hides cursor + applies)
         self.bind_all("<Button-1>", self._defocus_entries, add="+")
 
@@ -898,11 +925,9 @@ class ControlPanel(tk.Tk):
             for w in list(self.widgets.values()):
                 try: w.stop_timer(); w.set_action_detect(False)
                 except: pass
-            self._bind_hotkey()   # re-enable hotkey
 
         elif mode == "interval":
             self._action_detect.set(False)
-            self._unbind_hotkey()
             for w in list(self.widgets.values()):
                 try: w.set_action_detect(False)
                 except: pass
@@ -916,7 +941,6 @@ class ControlPanel(tk.Tk):
                 return
             self._interval_var.set("0")
             self._action_detect.set(True)
-            self._unbind_hotkey()
             for w in list(self.widgets.values()):
                 try: w.stop_timer(); w.set_action_detect(True)
                 except: pass
@@ -928,16 +952,6 @@ class ControlPanel(tk.Tk):
             except: pass
 
     # ── HOTKEY ────────────────────────────────────────
-    def _unbind_hotkey(self):
-        """Remove the active hotkey binding without rebinding."""
-        if HAS_KEYBOARD and self._hotkey_bound:
-            try: keyboard.remove_hotkey(self._hotkey_bound)
-            except Exception: pass
-        elif self._hotkey_bound:
-            try: self.unbind_all(f"<Key-{self._hotkey_bound}>")
-            except Exception: pass
-        self._hotkey_bound = None
-
     def _bind_hotkey(self):
         key = self._hotkey_var.get().strip().lower()
         if not key:
@@ -1093,6 +1107,14 @@ class ControlPanel(tk.Tk):
             except: pass
 
     def _quit(self):
+        save_config({
+            "mode":            self._mode_var.get(),
+            "lo":              self._lo_var.get(),
+            "hi":              self._hi_var.get(),
+            "interval":        self._interval_var.get(),
+            "hotkey":          self._hotkey_var.get(),
+            "invert_gradient": self._invert_gradient.get(),
+        })
         self._scan_active = False
         for w in list(self.widgets.values()):
             try: w.destroy()
