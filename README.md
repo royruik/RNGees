@@ -1,6 +1,6 @@
 # RNGees
 
-A lightweight GTO randomization overlay for online poker. RNGees sits on top of your poker table and generates a random number on demand — helping you implement mixed strategies without bias.
+A lightweight RNG overlay for online poker. RNGees sits on top of your poker table and generates a random number on demand — helping you implement mixed GTO strategies without bias.
 
 ![Action Detection Demo](test_demo/action_detection.gif)
 
