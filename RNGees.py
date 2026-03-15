@@ -41,6 +41,23 @@ def get_dpi_scale():
 
 DPI_SCALE = get_dpi_scale()
 
+# ── FONT ─────────────────────────────────────────────────
+def best_mono():
+    try:
+        import tkinter.font as tkf
+        import tkinter as _tk
+        _r = _tk.Tk(); _r.withdraw()
+        families = tkf.families()
+        _r.destroy()
+        for f in ("JetBrains Mono", "Cascadia Code", "Consolas", "Courier New"):
+            if f in families:
+                return f
+    except Exception:
+        pass
+    return "Courier New"
+
+MONO = best_mono()
+
 # ── THEME ────────────────────────────────────────────────
 BG       = "#0a1a10"
 FELT     = "#0d2818"
@@ -94,8 +111,7 @@ def crypto_rand(lo, hi):
 
 # ── WINDOW DETECTION ─────────────────────────────────────
 MATCH_KEYWORDS   = ["德扑", "holdem", "NL", "$"]
-EXCLUDE_KEYWORDS = ["chrome", "firefox", "edge", "claude",
-                    "visual studio", "code", "notepad"]
+EXCLUDE_KEYWORDS = ["HH"]
 MIN_W, MIN_H = 400, 300
 
 def is_poker_table(title, w, h):
@@ -213,7 +229,7 @@ class RNGWidget(tk.Toplevel):
         fs = font_size_for(S)
         self.num_id = self.cv.create_text(
             S // 2, S // 2, text="",
-            fill=GOLD, font=("Courier New", fs, "bold"),
+            fill=GOLD, font=(MONO, fs, "bold"),
             anchor="center"
         )
         self.dot_id = self.cv.create_oval(
@@ -333,13 +349,17 @@ class RNGWidget(tk.Toplevel):
         self.cv.configure(width=new_s, height=new_s)
         self.cv.coords("bg_rect", pad, pad, new_s-pad, new_s-pad)
         self.cv.coords(self.num_id, new_s//2, new_s//2)
-        self.cv.itemconfig(self.num_id, font=("Courier New", fs, "bold"))
+        self.cv.itemconfig(self.num_id, font=(MONO, fs, "bold"))
         self.cv.coords(self.dot_id, new_s-11, 4, new_s-4, 11)
 
     # ── ACTION DETECTION ──────────────────────────────
-    ACTION_X  = 0.65
-    ACTION_Y1 = 0.85
-    ACTION_Y2 = 1.00
+    # Detection region — covers bottom-right action button area
+    # X: 0.40–0.97  covers all major poker sites (GGPoker, Stars, 888, Party)
+    # Y: 0.83–0.97  inset from edges to avoid border hover highlight
+    ACTION_X1 = 0.57
+    ACTION_X2 = 0.98
+    ACTION_Y1 = 0.83
+    ACTION_Y2 = 0.97
 
     def _get_tk_rect(self):
         """Get the table window rect using DwmGetWindowAttribute which returns
@@ -369,14 +389,14 @@ class RNGWidget(tk.Toplevel):
             if not r:
                 return None
             tx, ty, tw, th = r
-            x1 = tx + int(tw * self.ACTION_X)
+            x1 = tx + int(tw * self.ACTION_X1)
             y1 = ty + int(th * self.ACTION_Y1)
-            x2 = tx + tw
+            x2 = tx + int(tw * self.ACTION_X2)
             y2 = ty + int(th * self.ACTION_Y2)
             img = ImageGrab.grab(bbox=(x1, y1, x2, y2))
-            if not hasattr(self, "_debug_saved"):
-                img.save("debug_sample.png")
-                self._debug_saved = True
+            # if not hasattr(self, "_debug_saved"):
+            #     img.save("debug_sample.png")
+            #     self._debug_saved = True
             pixels = list(img.getdata())
             if not pixels:
                 return None
@@ -403,6 +423,8 @@ class RNGWidget(tk.Toplevel):
         changed_count   = 0
         settled_count   = 0
 
+        last_tw, last_th = 0, 0
+
         while self._tracking:
             try:
                 if not self._dragging:
@@ -413,6 +435,9 @@ class RNGWidget(tk.Toplevel):
                         wx = tx + self._off_x
                         wy = ty + th + self._off_y
                         self.after(0, self._move_to, wx, wy, new_s)
+                        if tw != last_tw or th != last_th:
+                            self._prev_sample = None
+                            last_tw, last_th = tw, th
 
                 # ── Action detection ──────────────────────
                 if self._action_detect and HAS_PIL:
@@ -433,7 +458,7 @@ class RNGWidget(tk.Toplevel):
                                         if changed_count >= CONFIRM_FRAMES:
                                             self._action_triggered = True
                                             changed_count = 0
-                                            print(f"[ACTION] triggered diff={diff} brighter={sample_brightness-baseline_brightness}")
+                                            # print(f"[ACTION] triggered diff={diff} brighter={sample_brightness-baseline_brightness}")
                                             self.after(0, self.generate)
                                     else:
                                         # Got darker — buttons disappearing, ignore
@@ -454,13 +479,13 @@ class RNGWidget(tk.Toplevel):
                                     if settled_count >= SETTLE_FRAMES:
                                         self._action_triggered = False
                                         settled_count = 0
-                                        print(f"[RESET] settled diff={diff}")
+                                        # print(f"[RESET] settled diff={diff}")
                                 else:
                                     settled_count = 0
 
             except Exception:
                 pass
-            time.sleep(0.25)
+            time.sleep(0.1)
 
     def _move_to(self, wx, wy, new_s):
         try:
@@ -479,7 +504,7 @@ class RNGWidget(tk.Toplevel):
                 self.cv.coords("bg_rect", pad, pad, new_s-pad, new_s-pad)
                 self.cv.coords(self.num_id, new_s//2, new_s//2)
                 self.cv.itemconfig(self.num_id,
-                                   font=("Courier New", fs, "bold"))
+                                   font=(MONO, fs, "bold"))
                 self.cv.coords(self.dot_id,
                                new_s-11, 4, new_s-4, 11)
 
@@ -630,6 +655,7 @@ class ControlPanel(tk.Tk):
 
         self._invert_gradient  = tk.BooleanVar(value=False)
         self._action_detect    = tk.BooleanVar(value=False)
+        self._mode_var         = tk.StringVar(value="manual")
         self._lo_var          = tk.StringVar(value="1")
         self._hi_var          = tk.StringVar(value="100")
         self._interval_var    = tk.StringVar(value="0")
@@ -663,9 +689,9 @@ class ControlPanel(tk.Tk):
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
         tk.Label(hdr, text="RNGees", bg=FELT_MID, fg=GOLD,
-                 font=("Courier New", 14, "bold"), padx=14).pack(side="left", pady=12)
+                 font=(MONO, 14, "bold"), padx=14).pack(side="left", pady=12)
         self._status_lbl = tk.Label(hdr, text="idle", bg=FELT_MID, fg=DIM,
-                                    font=("Courier New", 7))
+                                    font=(MONO, 7))
         self._status_lbl.pack(side="left")
 
         # ── BUTTONS + SETTINGS DRAWER ────────────────
@@ -675,14 +701,14 @@ class ControlPanel(tk.Tk):
         btn_row.pack(fill="x", padx=12)
 
         tk.Button(btn_row, text="+ ADD", bg=FELT_MID, fg=GOLD,
-                  font=("Courier New", 9, "bold"), bd=0, relief="flat",
+                  font=(MONO, 9, "bold"), bd=0, relief="flat",
                   cursor="hand2", padx=10, pady=7,
                   activebackground="#254030", activeforeground=GOLD,
                   command=self._add_manual).pack(side="left", padx=3)
 
         self._drawer_arrow = tk.Button(btn_row, text="⚙ SETTINGS",
                                        bg=FELT_MID, fg=DIM,
-                                       font=("Courier New", 9, "bold"),
+                                       font=(MONO, 9, "bold"),
                                        bd=0, relief="flat", cursor="hand2",
                                        padx=10, pady=7,
                                        activebackground="#254030",
@@ -699,7 +725,7 @@ class ControlPanel(tk.Tk):
 
         # ── WIDGET LIST ───────────────────────────────
         tk.Label(self, text="  ACTIVE WIDGETS", bg=BG, fg=DIM,
-                 font=("Courier New", 8), anchor="w", pady=4).pack(fill="x")
+                 font=(MONO, 8), anchor="w", pady=4).pack(fill="x")
         tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
 
         list_outer = tk.Frame(self, bg=BG)
@@ -721,7 +747,7 @@ class ControlPanel(tk.Tk):
         # Log
         tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
         self._log_box = tk.Text(self, height=4, bg="#050d08", fg=DIM,
-                                font=("Courier New", 7), bd=0, state="disabled",
+                                font=(MONO, 7), bd=0, state="disabled",
                                 padx=8, pady=6, relief="flat",
                                 insertbackground=GOLD)
         self._log_box.pack(fill="x")
@@ -735,9 +761,9 @@ class ControlPanel(tk.Tk):
             row = tk.Frame(sf, bg=BG)
             row.pack(fill="x", pady=2)
             tk.Label(row, text=label, bg=BG, fg=CREAM,
-                     font=("Courier New", 9), width=10, anchor="w").pack(side="left")
+                     font=(MONO, 9), width=10, anchor="w").pack(side="left")
             e = tk.Entry(row, textvariable=var, width=5, bg=FELT_MID, fg=CREAM,
-                         font=("Courier New", 9), bd=0, insertbackground=CREAM,
+                         font=(MONO, 9), bd=0, insertbackground=CREAM,
                          justify="center", highlightthickness=1,
                          highlightbackground=BORDER)
             e.pack(side="left")
@@ -746,16 +772,16 @@ class ControlPanel(tk.Tk):
             e.bind("<Return>",   lambda ev: cmd())
             if suffix:
                 tk.Label(row, text=f" {suffix}", bg=BG, fg=DIM,
-                         font=("Courier New", 9)).pack(side="left")
+                         font=(MONO, 9)).pack(side="left")
 
         # Range: two entries on same row
         rng_row = tk.Frame(sf, bg=BG)
         rng_row.pack(fill="x", pady=2)
         tk.Label(rng_row, text="Range", bg=BG, fg=CREAM,
-                 font=("Courier New", 9), width=10, anchor="w").pack(side="left")
+                 font=(MONO, 9), width=10, anchor="w").pack(side="left")
         for var, sep in [(self._lo_var, " - "), (self._hi_var, "")]:
             e = tk.Entry(rng_row, textvariable=var, width=5, bg=FELT_MID, fg=CREAM,
-                         font=("Courier New", 9), bd=0, insertbackground=CREAM,
+                         font=(MONO, 9), bd=0, insertbackground=CREAM,
                          justify="center", highlightthickness=1,
                          highlightbackground=BORDER)
             e.pack(side="left")
@@ -763,24 +789,68 @@ class ControlPanel(tk.Tk):
             e.bind("<Return>",   lambda ev: self._apply_settings())
             if sep:
                 tk.Label(rng_row, text=sep, bg=BG, fg=DIM,
-                         font=("Courier New", 9)).pack(side="left")
+                         font=(MONO, 9)).pack(side="left")
 
-        entry_row("Interval", self._interval_var, "seconds")
-        entry_row("Hotkey",   self._hotkey_var,   on_change=self._bind_hotkey)
+        hk_row = tk.Frame(sf, bg=BG)
+        hk_row.pack(fill="x", pady=2)
+        tk.Label(hk_row, text="Hotkey", bg=BG, fg=CREAM,
+                 font=(MONO, 9), width=10, anchor="w").pack(side="left")
+        self._hotkey_entry = tk.Entry(hk_row, textvariable=self._hotkey_var,
+                                      width=5, bg=FELT_MID, fg=CREAM,
+                                      font=(MONO, 9), bd=0, insertbackground=CREAM,
+                                      justify="center", highlightthickness=1,
+                                      highlightbackground=BORDER)
+        self._hotkey_entry.pack(side="left")
+        self._hotkey_entry.bind("<FocusOut>", lambda ev: self._bind_hotkey())
+        self._hotkey_entry.bind("<Return>",   lambda ev: self._bind_hotkey())
 
-        # Checkboxes
+        # ── MODE (mutually exclusive) ──────────────────
+        mode_outer = tk.Frame(sf, bg=BG)
+        mode_outer.pack(fill="x", pady=(6, 0))
+        tk.Label(mode_outer, text="Mode", bg=BG, fg=CREAM,
+                 font=(MONO, 9), width=10, anchor="nw").pack(side="left", anchor="n")
+        radio_f = tk.Frame(mode_outer, bg=BG)
+        radio_f.pack(side="left")
+
+        def radio(text, value):
+            tk.Radiobutton(radio_f, text=text, variable=self._mode_var,
+                           value=value, bg=BG, fg=CREAM,
+                           selectcolor=FELT_MID, activebackground=BG,
+                           activeforeground=GOLD, font=(MONO, 8), bd=0,
+                           command=self._apply_mode).pack(anchor="w", pady=1)
+
+        radio("Manual",         "manual")
+
+        # Interval radio + seconds field on same row
+        interval_row = tk.Frame(radio_f, bg=BG)
+        interval_row.pack(anchor="w", pady=1)
+        tk.Radiobutton(interval_row, text="Interval", variable=self._mode_var,
+                       value="interval", bg=BG, fg=CREAM,
+                       selectcolor=FELT_MID, activebackground=BG,
+                       activeforeground=GOLD, font=(MONO, 8), bd=0,
+                       command=self._apply_mode).pack(side="left")
+        self._interval_row = tk.Frame(interval_row, bg=BG)
+        e_iv = tk.Entry(self._interval_row, textvariable=self._interval_var,
+                        width=4, bg=FELT_MID, fg=CREAM, font=(MONO, 9),
+                        bd=0, insertbackground=CREAM, justify="center",
+                        highlightthickness=1, highlightbackground=BORDER)
+        e_iv.pack(side="left", padx=(6, 2))
+        e_iv.bind("<FocusOut>", lambda ev: self._apply_mode())
+        e_iv.bind("<Return>",   lambda ev: self._apply_mode())
+        tk.Label(self._interval_row, text="sec", bg=BG, fg=DIM,
+                 font=(MONO, 8)).pack(side="left")
+
+        radio("Auto on action", "action")
+
+        # Invert gradient
         chk_f = tk.Frame(sf, bg=BG)
-        chk_f.pack(fill="x", pady=(4, 0))
-
-        def chk(text, var, cmd=None):
-            tk.Checkbutton(chk_f, text=text, variable=var,
-                           bg=BG, fg=CREAM, selectcolor=FELT_MID,
-                           activebackground=BG, activeforeground=GOLD,
-                           font=("Courier New", 8), bd=0,
-                           command=cmd).pack(anchor="w", pady=1)
-
-        chk("Invert gradient",   self._invert_gradient, self._push_settings)
-        chk("Auto-roll on action", self._action_detect,    self._push_action_detect)
+        chk_f.pack(fill="x", pady=(6, 0))
+        tk.Checkbutton(chk_f, text="Invert gradient",
+                       variable=self._invert_gradient,
+                       bg=BG, fg=CREAM, selectcolor=FELT_MID,
+                       activebackground=BG, activeforeground=GOLD,
+                       font=(MONO, 8), bd=0,
+                       command=self._push_settings).pack(anchor="w", pady=1)
 
     def _toggle_drawer(self):
         self._drawer_open = not self._drawer_open
@@ -808,12 +878,48 @@ class ControlPanel(tk.Tk):
             try:
                 w._lo = lo
                 w._hi = hi
-                if interval > 0:
+                if self._mode_var.get() == "interval" and interval > 0:
                     w._start_timer(interval)
                 else:
                     w.stop_timer()
             except Exception:
                 pass
+
+    def _apply_mode(self):
+        mode = self._mode_var.get()
+        if mode == "interval":
+            self._interval_row.pack(fill="x", pady=1)
+        else:
+            self._interval_row.pack_forget()
+
+        if mode == "manual":
+            self._action_detect.set(False)
+            self._interval_var.set("0")
+            for w in list(self.widgets.values()):
+                try: w.stop_timer(); w.set_action_detect(False)
+                except: pass
+            self._bind_hotkey()   # re-enable hotkey
+
+        elif mode == "interval":
+            self._action_detect.set(False)
+            self._unbind_hotkey()
+            for w in list(self.widgets.values()):
+                try: w.set_action_detect(False)
+                except: pass
+            self._apply_settings()
+
+        elif mode == "action":
+            if not HAS_PIL:
+                self._log("pip install Pillow  → for action detection")
+                self._mode_var.set("manual")
+                self._interval_row.pack_forget()
+                return
+            self._interval_var.set("0")
+            self._action_detect.set(True)
+            self._unbind_hotkey()
+            for w in list(self.widgets.values()):
+                try: w.stop_timer(); w.set_action_detect(True)
+                except: pass
 
     def _push_settings(self):
         inv = self._invert_gradient.get()
@@ -821,17 +927,17 @@ class ControlPanel(tk.Tk):
             try: w.update_settings(inv)
             except: pass
 
-    def _push_action_detect(self):
-        enabled = self._action_detect.get()
-        if enabled and not HAS_PIL:
-            self._log("pip install Pillow  → for action detection")
-            self._action_detect.set(False)
-            return
-        for w in list(self.widgets.values()):
-            try: w.set_action_detect(enabled)
-            except: pass
-
     # ── HOTKEY ────────────────────────────────────────
+    def _unbind_hotkey(self):
+        """Remove the active hotkey binding without rebinding."""
+        if HAS_KEYBOARD and self._hotkey_bound:
+            try: keyboard.remove_hotkey(self._hotkey_bound)
+            except Exception: pass
+        elif self._hotkey_bound:
+            try: self.unbind_all(f"<Key-{self._hotkey_bound}>")
+            except Exception: pass
+        self._hotkey_bound = None
+
     def _bind_hotkey(self):
         key = self._hotkey_var.get().strip().lower()
         if not key:
@@ -882,9 +988,9 @@ class ControlPanel(tk.Tk):
         row = tk.Frame(self._inner, bg=FELT, pady=5, padx=8)
         row.pack(fill="x", pady=2, padx=6)
         tk.Label(row, text="●", bg=FELT, fg=GREEN,
-                 font=("Courier New", 8)).pack(side="left", padx=(0, 6))
+                 font=(MONO, 8)).pack(side="left", padx=(0, 6))
         tk.Label(row, text=title[:26], bg=FELT, fg=CREAM,
-                 font=("Courier New", 8), anchor="w").pack(side="left")
+                 font=(MONO, 8), anchor="w").pack(side="left")
 
         # X button only for manual widgets — auto-detected tables
         # are removed automatically when the table closes
@@ -900,7 +1006,7 @@ class ControlPanel(tk.Tk):
                 self._refresh_status()
 
             tk.Button(row, text="✕", bg=BG, fg=RED_COL,
-                      font=("Courier New", 9, "bold"), bd=0, relief="flat",
+                      font=(MONO, 9, "bold"), bd=0, relief="flat",
                       cursor="hand2", padx=5,
                       activebackground="#3a1010", activeforeground=RED_COL,
                       command=_close_one).pack(side="right", padx=2)
@@ -945,7 +1051,13 @@ class ControlPanel(tk.Tk):
                                 w._start_timer(iv)
                         except Exception:
                             pass
-                        w.set_action_detect(self._action_detect.get())
+                        if self._mode_var.get() == "action":
+                            w.set_action_detect(True)
+                        elif self._mode_var.get() == "interval":
+                            try:
+                                iv = int(self._interval_var.get())
+                                if iv > 0: w._start_timer(iv)
+                            except: pass
                         self.widgets[hwnd] = w
                         label = title or f"Table {hwnd}"
                         self.after(0, self._add_row, hwnd, label)

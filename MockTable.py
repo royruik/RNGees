@@ -4,7 +4,6 @@ Window title contains "$" so RNGees auto-detects it.
 
 Space = trigger action buttons
 Escape or click any button = dismiss
-Click anywhere = print screen coordinates
 """
 
 import tkinter as tk
@@ -81,7 +80,6 @@ class MockTable(tk.Tk):
                           activebackground=RED_HOV, activeforeground="white",
                           command=self._resolve_action)
             b.grid(row=0, column=col, padx=4, pady=6)
-            b.bind("<Button-1>", self._print_coords)
         self._btn_win = None   # canvas window item, created on trigger
 
         # ── DETECTION REGION HIGHLIGHT ───────────────────────
@@ -94,7 +92,6 @@ class MockTable(tk.Tk):
         # ── BINDINGS ─────────────────────────────────────────
         self.bind("<space>",  lambda e: self._trigger_action())
         self.bind("<Escape>", lambda e: self._resolve_action())
-        self._canvas.bind("<Button-1>", self._print_coords)
 
     def _on_resize(self, e):
         w, h = e.width, e.height
@@ -104,16 +101,15 @@ class MockTable(tk.Tk):
         # Reposition buttons if visible
         if self._btn_win:
             self._canvas.coords(self._btn_win, w, h)
-        # Detection region — matches RNGees ACTION_X=0.45, Y1=0.85, Y2=1.00
-        # RNGees works on full GetWindowRect (topbar+canvas)
-        # canvas_h = total_h - TOPBAR(36), so convert:
-        TOP = 36
+        # Detection region — matches RNGees X1=0.40 X2=0.97 Y1=0.83 Y2=0.97
+        TOP     = 36
         total_h = h + TOP
-        rx1  = int(w * 0.45)
-        ry1  = int(total_h * 0.85) - TOP   # in canvas coords
-        ry2  = h                             # canvas bottom = GetWindowRect bottom
-        self._canvas.coords(self._region_rect,  rx1, ry1, w, ry2)
-        self._canvas.coords(self._region_label, w - 2, ry1 - 2)
+        rx1 = int(w * 0.40)
+        rx2 = int(w * 0.97)
+        ry1 = int(total_h * 0.83) - TOP
+        ry2 = int(total_h * 0.97) - TOP
+        self._canvas.coords(self._region_rect,  rx1, ry1, rx2, ry2)
+        self._canvas.coords(self._region_label, rx2 - 2, ry1 - 2)
 
     def _trigger_action(self):
         if self._action_visible:
@@ -137,10 +133,6 @@ class MockTable(tk.Tk):
             self._canvas.delete(self._btn_win)
             self._btn_win = None
 
-    def _print_coords(self, e):
-        print(f"[CLICK] screen=({e.x_root},{e.y_root}) | "
-              f"win=({self.winfo_x()},{self.winfo_y()}) "
-              f"size=({self.winfo_width()}x{self.winfo_height()})")
 
     def _auto_cycle(self):
         while self._auto_running:
