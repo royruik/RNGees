@@ -25,8 +25,6 @@ A lightweight GTO randomization overlay for online poker. RNGees sits on top of 
 
 Grab the latest `RNGees.exe` from [Releases](/Releases) — no Python required.
 
-> After building locally, the executable is at `Realeases\RNGees.exe`.
-
 ---
 
 ## Run from Source
@@ -93,9 +91,6 @@ When **Auto on action** mode is enabled, RNGees monitors a region at the bottom-
 python MockTable.py
 ```
 
-- **Space** — trigger action buttons
-- **Escape** or click any button — dismiss
-- Auto-cycles every N seconds (configurable in the top bar)
 
 ---
 
