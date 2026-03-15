@@ -1,0 +1,8 @@
+{
+  "mode": "manual",
+  "lo": "1",
+  "hi": "100",
+  "interval": "0",
+  "hotkey": "v",
+  "invert_gradient": false
+}

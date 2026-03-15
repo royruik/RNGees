@@ -8,7 +8,7 @@ A lightweight GTO randomization overlay for online poker. RNGees sits on top of 
 
 ## Features
 
-- **Auto-attaches** to poker table windows by title keyword (`德扑`, `holdem`, `NL`, `$`)
+- **Auto-attaches** to poker table windows by title keyword 
 - **Three roll modes** — mutually exclusive:
   - **Manual** — roll on hotkey press
   - **Interval** — auto-roll every N seconds
@@ -55,7 +55,7 @@ RNGees will automatically detect any open poker table window and attach a widget
 
 ## Build Executable
 
-To build a standalone `RNGees.exe`:
+To build a standalone `source\RNGees.exe`:
 
 ```
 build.bat
@@ -87,7 +87,7 @@ When **Auto on action** mode is enabled, RNGees monitors a region at the bottom-
 
 ## Testing
 
-`MockTable.py` simulates a poker table for testing without a real poker client:
+`source\MockTable.py` simulates a poker table for testing without a real poker client:
 
 ```
 python MockTable.py
