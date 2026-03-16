@@ -12,6 +12,7 @@ import time
 import os
 import sys
 import random
+_fast_rand = random.randint
 import ctypes
 
 try:
@@ -21,7 +22,7 @@ except ImportError:
     WIN32 = False
 
 try:
-    from PIL import ImageGrab
+    from PIL import ImageGrab, ImageStat
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
@@ -355,11 +356,13 @@ class RNGWidget(tk.Toplevel):
 
     # ── ACTION DETECTION ──────────────────────────────
     # Detection region — covers bottom-right action button area
-    # X: 0.40–0.97  covers all major poker sites (GGPoker, Stars, 888, Party)
+    # X: 0.56–0.98  covers all major poker sites (GGPoker, Stars, 888, Party)
     # Y: 0.83–0.97  inset from edges to avoid border hover highlight
-    ACTION_X1 = 0.57
+    # Tighter region — right 30% wide, bottom 12% tall
+    # Focused on actual button area so pixel change is less diluted
+    ACTION_X1 = 0.56
     ACTION_X2 = 0.98
-    ACTION_Y1 = 0.83
+    ACTION_Y1 = 0.85
     ACTION_Y2 = 0.97
 
     def _get_tk_rect(self):
@@ -382,7 +385,12 @@ class RNGWidget(tk.Toplevel):
             return get_window_rect(self.hwnd, physical=True)
 
     def _sample_action_region(self):
-        """Sample action button region using DWM real window bounds."""
+        """Sample action button region using DWM real window bounds.
+
+        Uses Pillow's ImageStat (C-optimised) instead of building a large numpy
+        array each frame, which keeps memory and GC pressure low when action
+        detection is running.
+        """
         if not HAS_PIL or not self.hwnd:
             return None
         try:
@@ -398,13 +406,13 @@ class RNGWidget(tk.Toplevel):
             # if not hasattr(self, "_debug_saved"):
             #     img.save("debug_sample.png")
             #     self._debug_saved = True
-            pixels = list(img.getdata())
-            if not pixels:
+            stat = ImageStat.Stat(img)
+            if not stat.mean or len(stat.mean) < 3:
                 return None
-            avg_r = sum(p[0] for p in pixels) // len(pixels)
-            avg_g = sum(p[1] for p in pixels) // len(pixels)
-            avg_b = sum(p[2] for p in pixels) // len(pixels)
-            return (avg_r, avg_g, avg_b)
+            avg_r, avg_g, avg_b = stat.mean[:3]
+            result = (int(avg_r), int(avg_g), int(avg_b))
+            # print(f"[SAMPLE] bbox=({x1},{y1},{x2},{y2}) avg={result}")
+            return result
         except Exception as e:
             print(f"[GRAB ERROR] {e}")
             return None
@@ -414,10 +422,14 @@ class RNGWidget(tk.Toplevel):
 
     # ── TRACKING ──────────────────────────────────────
     def _track_loop(self):
-        """Every 250 ms: reposition widget and check for action detection."""
+        """Every 300 ms: reposition widget and check for action detection.
+
+        Slightly slower cadence keeps CPU and memory usage in check when many
+        widgets are active, without noticeably delaying action detection.
+        """
         # Threshold: avg channel diff to count as meaningful change
         # High enough to ignore drag/shake, low enough to catch button appearance
-        DIFF_THRESHOLD  = 40
+        DIFF_THRESHOLD  = 20
         CONFIRM_FRAMES  = 1   # fire on first changed frame
         SETTLE_FRAMES   = 3
 
@@ -425,6 +437,7 @@ class RNGWidget(tk.Toplevel):
         settled_count   = 0
 
         last_tw, last_th = 0, 0
+        interval = 0.30  # seconds between samples
 
         while self._tracking:
             try:
@@ -486,7 +499,7 @@ class RNGWidget(tk.Toplevel):
 
             except Exception:
                 pass
-            time.sleep(0.1)
+            time.sleep(interval)
 
     def _move_to(self, wx, wy, new_s):
         try:
@@ -523,7 +536,7 @@ class RNGWidget(tk.Toplevel):
         def _roll():
             for _ in range(7):
                 self.cv.itemconfig(self.num_id,
-                                   text=str(crypto_rand(lo, hi)), fill=DIM)
+                                   text=str(_fast_rand(lo, hi)), fill=DIM)
                 time.sleep(0.045)
             final = crypto_rand(lo, hi)
             col   = number_color(final, lo, hi, invert=self._invert)
@@ -668,6 +681,9 @@ class ControlPanel(tk.Tk):
         self._scan_active     = True
         self._rows: dict      = {}
         self._drawer_open     = False
+        self._scroll_top_done = False
+        self._last_scroll_rh = -1
+        self._last_scroll_rw = -1
 
         self._invert_gradient  = tk.BooleanVar(value=False)
         self._action_detect    = tk.BooleanVar(value=False)
@@ -700,8 +716,23 @@ class ControlPanel(tk.Tk):
 
     # ── BUILD ─────────────────────────────────────────
     def _build(self):
-        # Header
-        hdr = tk.Frame(self, bg=FELT_MID, height=50)
+        # Log pinned at bottom
+        tk.Frame(self, bg=BORDER, height=1).pack(side="bottom", fill="x")
+        self._log_box = tk.Text(self, height=4, bg="#050d08", fg=DIM,
+                                font=(MONO, 7), bd=0, state="disabled",
+                                padx=8, pady=6, relief="flat",
+                                insertbackground=GOLD)
+        self._log_box.pack(side="bottom", fill="x")
+
+        # Main content: fixed header on top, scrollable widget list below
+        main_content = tk.Frame(self, bg=BG)
+        main_content.pack(fill="both", expand=True)
+
+        # ── Fixed header (does not scroll) ────────────────────────────────────
+        fixed_header = tk.Frame(main_content, bg=BG)
+        fixed_header.pack(side="top", fill="x")
+
+        hdr = tk.Frame(fixed_header, bg=FELT_MID, height=50)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
         tk.Label(hdr, text="RNGees", bg=FELT_MID, fg=GOLD,
@@ -710,18 +741,14 @@ class ControlPanel(tk.Tk):
                                     font=(MONO, 7))
         self._status_lbl.pack(side="left")
 
-        # ── BUTTONS + SETTINGS DRAWER ────────────────
-        tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
-
-        btn_row = tk.Frame(self, bg=BG, pady=8)
+        tk.Frame(fixed_header, bg=BORDER, height=1).pack(fill="x")
+        btn_row = tk.Frame(fixed_header, bg=BG, pady=8)
         btn_row.pack(fill="x", padx=12)
-
         tk.Button(btn_row, text="+ ADD", bg=FELT_MID, fg=GOLD,
                   font=(MONO, 9, "bold"), bd=0, relief="flat",
                   cursor="hand2", padx=10, pady=7,
                   activebackground="#254030", activeforeground=GOLD,
                   command=self._add_manual).pack(side="left", padx=3)
-
         self._drawer_arrow = tk.Button(btn_row, text="⚙ SETTINGS",
                                        bg=FELT_MID, fg=DIM,
                                        font=(MONO, 9, "bold"),
@@ -731,42 +758,55 @@ class ControlPanel(tk.Tk):
                                        activeforeground=GOLD,
                                        command=self._toggle_drawer)
         self._drawer_arrow.pack(side="left", padx=3)
-
-        # Drawer body (hidden by default)
-        tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
-        self._drawer_body = tk.Frame(self, bg=BG)
+        tk.Frame(fixed_header, bg=BORDER, height=1).pack(fill="x")
+        self._drawer_body = tk.Frame(fixed_header, bg=BG)
         self._build_drawer(self._drawer_body)
-
-        tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
-
-        # ── WIDGET LIST ───────────────────────────────
-        tk.Label(self, text="  ACTIVE WIDGETS", bg=BG, fg=DIM,
+        tk.Frame(fixed_header, bg=BORDER, height=1).pack(fill="x")
+        tk.Label(fixed_header, text="  ACTIVE WIDGETS", bg=BG, fg=DIM,
                  font=(MONO, 8), anchor="w", pady=4).pack(fill="x")
-        tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
+        tk.Frame(fixed_header, bg=BORDER, height=1).pack(fill="x")
 
-        list_outer = tk.Frame(self, bg=BG)
-        list_outer.pack(fill="both", expand=True)
+        # ── Scrollable area (widget list only) ─────────────────────────────────
+        outer = tk.Frame(main_content, bg=BG)
+        outer.pack(fill="both", expand=True)
+        outer.grid_rowconfigure(0, weight=1)
+        outer.grid_columnconfigure(0, weight=1)
 
-        self._list_canvas = tk.Canvas(list_outer, bg=BG, highlightthickness=0)
-        sb = tk.Scrollbar(list_outer, orient="vertical",
-                          command=self._list_canvas.yview,
+        sb = tk.Scrollbar(outer, orient="vertical",
                           bg=FELT_MID, troughcolor=BG, bd=0, relief="flat")
-        self._inner = tk.Frame(self._list_canvas, bg=BG)
-        self._inner.bind("<Configure>",
-                         lambda e: self._list_canvas.configure(
-                             scrollregion=self._list_canvas.bbox("all")))
-        self._list_canvas.create_window((0, 0), window=self._inner, anchor="nw")
-        self._list_canvas.configure(yscrollcommand=sb.set)
-        self._list_canvas.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
+        sb.grid(row=0, column=1, sticky="ns")
+        sb.grid_remove()  # Hide scrollbar; keep connected so mouse wheel still scrolls
 
-        # Log
-        tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
-        self._log_box = tk.Text(self, height=4, bg="#050d08", fg=DIM,
-                                font=(MONO, 7), bd=0, state="disabled",
-                                padx=8, pady=6, relief="flat",
-                                insertbackground=GOLD)
-        self._log_box.pack(fill="x")
+        self._main_canvas = tk.Canvas(outer, bg=BG, highlightthickness=0)
+        self._main_canvas.grid(row=0, column=0, sticky="nsew")
+        sb.config(command=self._main_canvas.yview)
+        self._main_canvas.configure(yscrollcommand=sb.set)
+
+        p = tk.Frame(self._main_canvas, bg=BG)
+        win = self._main_canvas.create_window((0, 0), window=p, anchor="nw")
+
+        def _on_frame_configure(event):
+            self._main_canvas.configure(scrollregion=self._main_canvas.bbox("all"))
+
+        def _on_canvas_configure(event):
+            self._main_canvas.itemconfig(win, width=event.width)
+
+        def _on_mousewheel(event):
+            self._main_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        p.bind("<Configure>", _on_frame_configure)
+        self._main_canvas.bind("<Configure>", _on_canvas_configure)
+        self._main_canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        # ── Widget list (scrolls) ─────────────────────────────────────────────
+        self._inner = tk.Frame(p, bg=BG)
+        self._inner.pack(fill="x")
+
+        def _ensure_scroll_at_start():
+            self._main_canvas.update_idletasks()
+            self._main_canvas.configure(scrollregion=self._main_canvas.bbox("all"))
+            self._main_canvas.yview_moveto(0)
+        self.after_idle(_ensure_scroll_at_start)
 
     def _build_drawer(self, parent):
         """Build the settings fields inside the drawer frame."""

@@ -104,9 +104,9 @@ class MockTable(tk.Tk):
         # Detection region — matches RNGees X1=0.40 X2=0.97 Y1=0.83 Y2=0.97
         TOP     = 36
         total_h = h + TOP
-        rx1 = int(w * 0.40)
+        rx1 = int(w * 0.68)
         rx2 = int(w * 0.97)
-        ry1 = int(total_h * 0.83) - TOP
+        ry1 = int(total_h * 0.85) - TOP
         ry2 = int(total_h * 0.97) - TOP
         self._canvas.coords(self._region_rect,  rx1, ry1, rx2, ry2)
         self._canvas.coords(self._region_label, rx2 - 2, ry1 - 2)
