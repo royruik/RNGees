@@ -80,7 +80,7 @@ RNGees├── dist│   └── RNGees.exe      ← this is the executable
 ~~- Works by detecting brightness change in the button area — no game memory reading~~
 ~~- Inset from window borders to avoid false triggers from hover highlights~~
 ~~- Resets baseline on table resize~~
-**Known issue: Action detection table feature is not working fine (with potential anti-botting blocking screenshot feature with poker sites).**
+- **Known issue: Action detection table feature is not working fine (with potential anti-botting blocking screenshot feature with poker sites).**
 - A new approach is under development.
 
 ---
