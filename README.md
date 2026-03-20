@@ -12,10 +12,10 @@ A lightweight RNG overlay for online poker. RNGees sits on top of your poker tab
 - **Three roll modes** — mutually exclusive:
   - **Manual** — roll on hotkey press
   - **Interval** — auto-roll every N seconds
-  - **Auto on action** — detects when action buttons appear on screen and rolls automatically
+  - ~~**Auto on action** — detects when action buttons appear on screen and rolls automatically~~
 - **Customizable range** — default 1–100, set any range
 - **Gradient coloring** — number color reflects its position in the range (red → gold → green), invertible
-- **Resizable widget** — drag edges/corners to resize, drag center to reposition
+- **Resizable widget** — (For Manuals) drag edges/corners to resize, drag center to reposition
 - **Always on top** — overlay stays above the poker client
 - **Multiple tables** — one widget per detected table, plus manual widgets
 
