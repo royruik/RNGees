@@ -22,20 +22,6 @@ except ImportError:
     WIN32 = False
 
 try:
-    import dxcam as _dxcam
-    import numpy as np
-    from PIL import ImageStat, Image
-    HAS_PIL   = True
-    HAS_DXCAM = True
-except ImportError:
-    HAS_DXCAM = False
-    try:
-        from PIL import ImageGrab, ImageStat
-        HAS_PIL = True
-    except ImportError:
-        HAS_PIL = False
-
-try:
     import keyboard
     HAS_KEYBOARD = True
 except ImportError:
@@ -196,9 +182,7 @@ class RNGWidget(tk.Toplevel):
         self._drag_moved   = False
         self._drag_start_x = self._drag_start_y = 0
         self._dragging          = False  # pause tracking while user is dragging
-        self._action_detect     = False  # enable action detection
-        self._prev_sample       = None   # last pixel sample for change detection
-        self._action_triggered  = False  # debounce: prevent re-trigger until reset
+        self._action_detect     = False
         self._resizing     = False
         self._resize_start_x = self._resize_start_y = 0
         self._resize_start_s = 0
@@ -216,8 +200,7 @@ class RNGWidget(tk.Toplevel):
         self.after(100, self.generate)
 
         if self._tracking:
-            threading.Thread(target=self._track_loop,   daemon=True).start()
-            threading.Thread(target=self._focus_detect, daemon=True).start()
+            threading.Thread(target=self._track_loop, daemon=True).start()
 
     def _defocus_entries(self, event):
         """If click target is not an Entry, move focus to the window so
@@ -367,221 +350,76 @@ class RNGWidget(tk.Toplevel):
     # Detection region — covers bottom-right action button area
     # X: 0.56–0.98  covers all major poker sites (GGPoker, Stars, 888, Party)
     # Y: 0.83–0.97  inset from edges to avoid border hover highlight
-    # Tighter region — right 30% wide, bottom 12% tall
-    # Focused on actual button area so pixel change is less diluted
-    ACTION_X1 = 0.56
-    ACTION_X2 = 0.98
-    ACTION_Y1 = 0.85
-    ACTION_Y2 = 0.97
-
-    def _get_tk_rect(self):
-        """Get the table window rect using DwmGetWindowAttribute which returns
-        the real visible rect without the invisible shadow border."""
-        if not WIN32 or not self.hwnd:
-            return None
-        try:
-            import ctypes
-            DWMWA_EXTENDED_FRAME_BOUNDS = 9
-            rect = ctypes.wintypes.RECT()
-            ctypes.windll.dwmapi.DwmGetWindowAttribute(
-                self.hwnd, DWMWA_EXTENDED_FRAME_BOUNDS,
-                ctypes.byref(rect), ctypes.sizeof(rect))
-            x, y = rect.left, rect.top
-            w, h = rect.right - rect.left, rect.bottom - rect.top
-            s = DPI_SCALE
-            return int(x*s), int(y*s), int(w*s), int(h*s)
-        except Exception:
-            return get_window_rect(self.hwnd, physical=True)
-
-    _dxcam_inst = None   # per-widget dxcam instance
-
-    def _get_dxcam(self):
-        if self._dxcam_inst is None and HAS_DXCAM:
-            try:
-                self._dxcam_inst = _dxcam.create(output_color="RGB")
-            except Exception:
-                pass
-        return self._dxcam_inst
-
-    def _sample_action_region(self):
-        """Sample action button region.
-        Uses dxcam (DXGI Desktop Duplication) — captures GPU-rendered windows
-        like GGPoker that block PIL ImageGrab. Falls back to PIL if unavailable.
-        """
-        if not HAS_PIL or not self.hwnd:
-            return None
-        try:
-            r = self._get_tk_rect()
-            if not r:
-                return None
-            tx, ty, tw, th = r
-            x1 = tx + int(tw * self.ACTION_X1)
-            y1 = ty + int(th * self.ACTION_Y1)
-            x2 = tx + int(tw * self.ACTION_X2)
-            y2 = ty + int(th * self.ACTION_Y2)
-
-            if HAS_DXCAM:
-                cam = self._get_dxcam()
-                if cam is not None:
-                    frame = cam.grab(region=(x1, y1, x2, y2))
-                    if frame is None:
-                        return None
-                    if frame.size == 0 or frame.mean() < 1:
-                        return None
-                    avg = frame.mean(axis=(0, 1))
-                    return (int(avg[0]), int(avg[1]), int(avg[2]))
-
-            # PIL fallback
-            img  = ImageGrab.grab(bbox=(x1, y1, x2, y2), all_screens=True)
-            stat = ImageStat.Stat(img)
-            if not stat.mean or len(stat.mean) < 3:
-                return None
-            return (int(stat.mean[0]), int(stat.mean[1]), int(stat.mean[2]))
-
-        except Exception:
-            return None
-    def _pixel_diff(self, a, b):
-        """Sum of absolute differences across RGB channels."""
-        return sum(abs(a[i] - b[i]) for i in range(3))
 
     # ── TRACKING ──────────────────────────────────────
     def _track_loop(self):
-        """Every 300 ms: reposition widget and check for action detection.
-
-        Slightly slower cadence keeps CPU and memory usage in check when many
-        widgets are active, without noticeably delaying action detection.
-        """
-        # Threshold: avg channel diff to count as meaningful change
-        # High enough to ignore drag/shake, low enough to catch button appearance
-        DIFF_THRESHOLD  = 20
-        CONFIRM_FRAMES  = 1   # fire on first changed frame
-        SETTLE_FRAMES   = 3
-
-        changed_count   = 0
-        settled_count   = 0
-
+        """Repositions widget every tick and detects action via smart focus steal."""
+        CLICK_WINDOW = 0.25
+        VK_LBUTTON   = 0x01
+        VK_RBUTTON   = 0x02
+        was_fg       = False
+        last_click   = (0.0, -1, -1)
         last_tw, last_th = 0, 0
-        interval = 0.30  # seconds between samples
 
         while self._tracking:
             try:
+                # ── Reposition widget ──────────────────
                 if not self._dragging:
                     r = get_window_rect(self.hwnd)
                     if r:
                         tx, ty, tw, th = r
                         new_s = widget_size_for(tw, th)
-                        wx = tx + self._off_x
-                        wy = ty + th + self._off_y
+                        wx    = tx + self._off_x
+                        wy    = ty + th + self._off_y
                         self.after(0, self._move_to, wx, wy, new_s)
-                        if tw != last_tw or th != last_th:
-                            self._prev_sample = None
-                            last_tw, last_th = tw, th
+                        last_tw, last_th = tw, th
 
-                # ── Action detection ──────────────────────
-                if self._action_detect and HAS_PIL:
-                    sample = self._sample_action_region()
-                    if sample:
-                        if self._prev_sample is None:
-                            self._prev_sample = sample
-                        else:
-                            diff = self._pixel_diff(sample, self._prev_sample)
-                            if not self._action_triggered:
-                                if diff >= DIFF_THRESHOLD:
-                                    # Only trigger if region got BRIGHTER (buttons appearing)
-                                    # sum of sample channels > sum of baseline channels
-                                    sample_brightness  = sum(sample)
-                                    baseline_brightness = sum(self._prev_sample)
-                                    if sample_brightness > baseline_brightness:
-                                        changed_count += 1
-                                        if changed_count >= CONFIRM_FRAMES:
-                                            self._action_triggered = True
-                                            changed_count = 0
-                                            # print(f"[ACTION] triggered diff={diff} brighter={sample_brightness-baseline_brightness}")
-                                            self.after(0, self.generate)
-                                    else:
-                                        # Got darker — buttons disappearing, ignore
-                                        changed_count = 0
-                                        self._prev_sample = tuple(
-                                            int(self._prev_sample[i]*0.85 + sample[i]*0.15)
-                                            for i in range(3)
-                                        )
-                                else:
-                                    changed_count = 0
-                                    self._prev_sample = tuple(
-                                        int(self._prev_sample[i]*0.85 + sample[i]*0.15)
-                                        for i in range(3)
-                                    )
-                            else:
-                                if diff < DIFF_THRESHOLD // 2:
-                                    settled_count += 1
-                                    if settled_count >= SETTLE_FRAMES:
-                                        self._action_triggered = False
-                                        settled_count = 0
-                                        # print(f"[RESET] settled diff={diff}")
-                                else:
-                                    settled_count = 0
-
-            except Exception:
-                pass
-            time.sleep(interval)
-
-    def _focus_detect(self):
-        """Detect GGPoker smart focus steal as action signal.
-
-        When is_fg flips False→True:
-        - If the click that caused it was INSIDE this table's window region
-          → user clicked the table → ignore
-        - If no click, or click was OUTSIDE this table's region
-          → smart focus steal → auto roll
-        """
-        CLICK_WINDOW = 0.25  # seconds — window to check for click
-        VK_LBUTTON   = 0x01
-        VK_RBUTTON   = 0x02
-        was_fg       = False
-        # Store (time, x, y) of last click
-        last_click   = (0.0, -1, -1)
-
-        while self._tracking:
-            try:
-                # Poll mouse buttons — low bit = pressed since last call
+                # ── Track mouse clicks ─────────────────
                 ls = ctypes.windll.user32.GetAsyncKeyState(VK_LBUTTON)
                 rs = ctypes.windll.user32.GetAsyncKeyState(VK_RBUTTON)
                 if (ls & 0x0001) or (rs & 0x0001):
-                    # Record click position at this moment
                     pt = ctypes.wintypes.POINT()
                     ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
                     last_click = (time.monotonic(), pt.x, pt.y)
 
-                # Check foreground
+                # ── Focus change detection ─────────────
                 is_fg = (ctypes.windll.user32.GetForegroundWindow() == self.hwnd)
-                if is_fg and not was_fg and self._action_detect:
-                    # Focus just came to this table
-                    click_t, cx, cy = last_click
-                    since_click = time.monotonic() - click_t
 
-                    if since_click > CLICK_WINDOW:
-                        # No recent click anywhere → definitely smart focus → roll
-                        self.after(0, self.generate)
-                    else:
-                        # Recent click — check if it was INSIDE this table's region
-                        r = get_window_rect(self.hwnd)
-                        if r:
-                            tx, ty, tw, th = r
-                            click_in_table = (tx <= cx <= tx + tw and
-                                              ty <= cy <= ty + th)
-                            if not click_in_table:
-                                # Click was outside this table → smart focus → roll
-                                self.after(0, self.generate)
-                            # else: click was inside table → user clicked → ignore
+                if is_fg and not was_fg:
+                    # Wait 50ms so any simultaneous click registers
+                    time.sleep(0.05)
+                    ls2 = ctypes.windll.user32.GetAsyncKeyState(VK_LBUTTON)
+                    rs2 = ctypes.windll.user32.GetAsyncKeyState(VK_RBUTTON)
+                    if (ls2 & 0x0001) or (rs2 & 0x0001):
+                        pt2 = ctypes.wintypes.POINT()
+                        ctypes.windll.user32.GetCursorPos(ctypes.byref(pt2))
+                        last_click = (time.monotonic(), pt2.x, pt2.y)
+
+                    if self._action_detect:
+                        click_t, cx, cy = last_click
+                        since_click = time.monotonic() - click_t
+                        if since_click > CLICK_WINDOW:
+                            # No recent click → smart focus steal → roll
+                            self.after(0, self.generate)
+                        else:
+                            # Recent click — only ignore if it was inside this table
+                            r = get_window_rect(self.hwnd)
+                            if r:
+                                tx, ty, tw, th = r
+                                if not (tx <= cx <= tx + tw and ty <= cy <= ty + th):
+                                    self.after(0, self.generate)
+
+                if is_fg != was_fg:
+                    hw = self.hwnd
+                    fg = is_fg
+                    self.master.after(0, lambda h=hw, f=fg:
+                        self.master.set_row_focus(h, f))
 
                 was_fg = is_fg
 
             except Exception:
                 pass
-            time.sleep(0.05)
-
-    def _get_real_hwnd(self):
-        return self.hwnd
+            time.sleep(0.1)
 
     def _move_to(self, wx, wy, new_s):
         try:
@@ -709,23 +547,16 @@ class RNGWidget(tk.Toplevel):
         self._tracking      = False
         self._timer_running = False
         self._timer_gen += 1
-        if self._dxcam_inst is not None:
-            try: self._dxcam_inst.stop()
-            except: pass
         super().destroy()
 
     def update_settings(self, invert):
         self._invert = invert
 
     def set_action_detect(self, enabled):
-        self._action_detect    = enabled
-        self._prev_sample      = None
-        self._action_triggered = False
-        # Show green dot when action detection is on (same as timer)
+        self._action_detect = enabled
         if enabled:
             self.cv.itemconfig(self.dot_id, fill=GREEN)
         elif not self._rolling:
-            # Only dim if timer isn't keeping it green
             self.cv.itemconfig(self.dot_id, fill=DIM)
 
 
@@ -1048,11 +879,6 @@ class ControlPanel(tk.Tk):
             self._apply_settings()
 
         elif mode == "action":
-            if not HAS_PIL:
-                self._log("pip install Pillow  → for action detection")
-                self._mode_var.set("manual")
-                self._interval_row.pack_forget()
-                return
             self._interval_var.set("0")
             self._action_detect.set(True)
             for w in list(self.widgets.values()):
@@ -1106,6 +932,12 @@ class ControlPanel(tk.Tk):
     def _set_status(self, msg):
         self.after(0, lambda: self._status_lbl.configure(text=msg))
 
+    def set_row_focus(self, key, is_fg):
+        if key in self._rows:
+            row, dot = self._rows[key]
+            try: dot.configure(fg=GOLD if is_fg else GREEN)
+            except: pass
+
     def _refresh_status(self):
         auto_n   = sum(1 for k in self.widgets if isinstance(k, int))
         manual_n = sum(1 for k in self.widgets if isinstance(k, str))
@@ -1115,8 +947,8 @@ class ControlPanel(tk.Tk):
     def _add_row(self, key, title):
         row = tk.Frame(self._inner, bg=FELT, pady=5, padx=8)
         row.pack(fill="x", pady=2, padx=6)
-        tk.Label(row, text="●", bg=FELT, fg=GREEN,
-                 font=(MONO, 8)).pack(side="left", padx=(0, 6))
+        dot = tk.Label(row, text="●", bg=FELT, fg=GREEN, font=(MONO, 8))
+        dot.pack(side="left", padx=(0, 6))
         tk.Label(row, text=title[:26], bg=FELT, fg=CREAM,
                  font=(MONO, 8), anchor="w").pack(side="left")
 
@@ -1138,11 +970,12 @@ class ControlPanel(tk.Tk):
                       cursor="hand2", padx=5,
                       activebackground="#3a1010", activeforeground=RED_COL,
                       command=_close_one).pack(side="right", padx=2)
-        self._rows[key] = row
+        self._rows[key] = (row, dot)
 
     def _remove_row(self, key):
         if key in self._rows:
-            self._rows[key].destroy()
+            row, dot = self._rows[key]
+            row.destroy()
             del self._rows[key]
 
     # ── AUTO SCAN ─────────────────────────────────────
