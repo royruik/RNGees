@@ -123,6 +123,18 @@ class MockTable(tk.Tk):
         self._btn_win = self._canvas.create_window(
             w, h, window=self._btn_frame, anchor="se")
         self._canvas.lift(self._btn_win)
+        # Steal focus via Win32 — simulates GGPoker smart focus
+        try:
+            import ctypes
+            import win32gui
+            # Need real HWND — find by title
+            hwnd = win32gui.FindWindow(None, self.title())
+            if hwnd:
+                # AllowSetForegroundWindow trick to bypass Windows restriction
+                ctypes.windll.user32.AllowSetForegroundWindow(-1)
+                ctypes.windll.user32.SetForegroundWindow(hwnd)
+        except Exception as e:
+            print(f"[FOCUS] {e}")
 
     def _resolve_action(self):
         if not self._action_visible:

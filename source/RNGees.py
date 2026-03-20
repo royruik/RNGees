@@ -216,7 +216,8 @@ class RNGWidget(tk.Toplevel):
         self.after(100, self.generate)
 
         if self._tracking:
-            threading.Thread(target=self._track_loop, daemon=True).start()
+            threading.Thread(target=self._track_loop,   daemon=True).start()
+            threading.Thread(target=self._focus_detect, daemon=True).start()
 
     def _defocus_entries(self, event):
         """If click target is not an Entry, move focus to the window so
@@ -523,6 +524,64 @@ class RNGWidget(tk.Toplevel):
             except Exception:
                 pass
             time.sleep(interval)
+
+    def _focus_detect(self):
+        """Detect GGPoker smart focus steal as action signal.
+
+        When is_fg flips False→True:
+        - If the click that caused it was INSIDE this table's window region
+          → user clicked the table → ignore
+        - If no click, or click was OUTSIDE this table's region
+          → smart focus steal → auto roll
+        """
+        CLICK_WINDOW = 0.25  # seconds — window to check for click
+        VK_LBUTTON   = 0x01
+        VK_RBUTTON   = 0x02
+        was_fg       = False
+        # Store (time, x, y) of last click
+        last_click   = (0.0, -1, -1)
+
+        while self._tracking:
+            try:
+                # Poll mouse buttons — low bit = pressed since last call
+                ls = ctypes.windll.user32.GetAsyncKeyState(VK_LBUTTON)
+                rs = ctypes.windll.user32.GetAsyncKeyState(VK_RBUTTON)
+                if (ls & 0x0001) or (rs & 0x0001):
+                    # Record click position at this moment
+                    pt = ctypes.wintypes.POINT()
+                    ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+                    last_click = (time.monotonic(), pt.x, pt.y)
+
+                # Check foreground
+                is_fg = (ctypes.windll.user32.GetForegroundWindow() == self.hwnd)
+                if is_fg and not was_fg and self._action_detect:
+                    # Focus just came to this table
+                    click_t, cx, cy = last_click
+                    since_click = time.monotonic() - click_t
+
+                    if since_click > CLICK_WINDOW:
+                        # No recent click anywhere → definitely smart focus → roll
+                        self.after(0, self.generate)
+                    else:
+                        # Recent click — check if it was INSIDE this table's region
+                        r = get_window_rect(self.hwnd)
+                        if r:
+                            tx, ty, tw, th = r
+                            click_in_table = (tx <= cx <= tx + tw and
+                                              ty <= cy <= ty + th)
+                            if not click_in_table:
+                                # Click was outside this table → smart focus → roll
+                                self.after(0, self.generate)
+                            # else: click was inside table → user clicked → ignore
+
+                was_fg = is_fg
+
+            except Exception:
+                pass
+            time.sleep(0.05)
+
+    def _get_real_hwnd(self):
+        return self.hwnd
 
     def _move_to(self, wx, wy, new_s):
         try:
