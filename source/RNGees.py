@@ -22,10 +22,18 @@ except ImportError:
     WIN32 = False
 
 try:
-    from PIL import ImageGrab, ImageStat
-    HAS_PIL = True
+    import dxcam as _dxcam
+    import numpy as np
+    from PIL import ImageStat, Image
+    HAS_PIL   = True
+    HAS_DXCAM = True
 except ImportError:
-    HAS_PIL = False
+    HAS_DXCAM = False
+    try:
+        from PIL import ImageGrab, ImageStat
+        HAS_PIL = True
+    except ImportError:
+        HAS_PIL = False
 
 try:
     import keyboard
@@ -384,12 +392,20 @@ class RNGWidget(tk.Toplevel):
         except Exception:
             return get_window_rect(self.hwnd, physical=True)
 
-    def _sample_action_region(self):
-        """Sample action button region using DWM real window bounds.
+    _dxcam_inst = None   # per-widget dxcam instance
 
-        Uses Pillow's ImageStat (C-optimised) instead of building a large numpy
-        array each frame, which keeps memory and GC pressure low when action
-        detection is running.
+    def _get_dxcam(self):
+        if self._dxcam_inst is None and HAS_DXCAM:
+            try:
+                self._dxcam_inst = _dxcam.create(output_color="RGB")
+            except Exception:
+                pass
+        return self._dxcam_inst
+
+    def _sample_action_region(self):
+        """Sample action button region.
+        Uses dxcam (DXGI Desktop Duplication) — captures GPU-rendered windows
+        like GGPoker that block PIL ImageGrab. Falls back to PIL if unavailable.
         """
         if not HAS_PIL or not self.hwnd:
             return None
@@ -402,19 +418,26 @@ class RNGWidget(tk.Toplevel):
             y1 = ty + int(th * self.ACTION_Y1)
             x2 = tx + int(tw * self.ACTION_X2)
             y2 = ty + int(th * self.ACTION_Y2)
-            img = ImageGrab.grab(bbox=(x1, y1, x2, y2))
-            # if not hasattr(self, "_debug_saved"):
-            #     img.save("debug_sample.png")
-            #     self._debug_saved = True
+
+            if HAS_DXCAM:
+                cam = self._get_dxcam()
+                if cam is not None:
+                    frame = cam.grab(region=(x1, y1, x2, y2))
+                    if frame is None:
+                        return None
+                    if frame.size == 0 or frame.mean() < 1:
+                        return None
+                    avg = frame.mean(axis=(0, 1))
+                    return (int(avg[0]), int(avg[1]), int(avg[2]))
+
+            # PIL fallback
+            img  = ImageGrab.grab(bbox=(x1, y1, x2, y2), all_screens=True)
             stat = ImageStat.Stat(img)
             if not stat.mean or len(stat.mean) < 3:
                 return None
-            avg_r, avg_g, avg_b = stat.mean[:3]
-            result = (int(avg_r), int(avg_g), int(avg_b))
-            # print(f"[SAMPLE] bbox=({x1},{y1},{x2},{y2}) avg={result}")
-            return result
-        except Exception as e:
-            print(f"[GRAB ERROR] {e}")
+            return (int(stat.mean[0]), int(stat.mean[1]), int(stat.mean[2]))
+
+        except Exception:
             return None
     def _pixel_diff(self, a, b):
         """Sum of absolute differences across RGB channels."""
@@ -627,6 +650,9 @@ class RNGWidget(tk.Toplevel):
         self._tracking      = False
         self._timer_running = False
         self._timer_gen += 1
+        if self._dxcam_inst is not None:
+            try: self._dxcam_inst.stop()
+            except: pass
         super().destroy()
 
     def update_settings(self, invert):
