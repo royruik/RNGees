@@ -182,7 +182,7 @@ class RNGWidget(tk.Toplevel):
         self._drag_moved   = False
         self._drag_start_x = self._drag_start_y = 0
         self._dragging          = False  # pause tracking while user is dragging
-        self._action_detect     = False
+        self._hover_detect     = False
         self._resizing     = False
         self._resize_start_x = self._resize_start_y = 0
         self._resize_start_s = 0
@@ -346,14 +346,9 @@ class RNGWidget(tk.Toplevel):
         self.cv.itemconfig(self.num_id, font=(MONO, fs, "bold"))
         self.cv.coords(self.dot_id, new_s-11, 4, new_s-4, 11)
 
-    # ── ACTION DETECTION ──────────────────────────────
-    # Detection region — covers bottom-right action button area
-    # X: 0.56–0.98  covers all major poker sites (GGPoker, Stars, 888, Party)
-    # Y: 0.83–0.97  inset from edges to avoid border hover highlight
-
     # ── TRACKING ──────────────────────────────────────
     def _track_loop(self):
-        """Repositions widget every tick and detects action via cursor hover."""
+        """Repositions widget every tick and detects cursor hover."""
         was_hover = False
 
         while self._tracking:
@@ -375,7 +370,7 @@ class RNGWidget(tk.Toplevel):
                                     ty <= pt.y <= ty + th)
 
                         if is_hover and not was_hover:
-                            if self._action_detect:
+                            if self._hover_detect:
                                 self.after(0, self.generate)
                         elif not is_hover and was_hover:
                             self.after(0, self._clear_display)
@@ -424,17 +419,12 @@ class RNGWidget(tk.Toplevel):
         self._rolling = True
         lo, hi = self._lo, self._hi
 
-        def _roll(frame=0):
-            if frame < 7:
-                self.cv.itemconfig(self.num_id,
-                                   text=str(_fast_rand(lo, hi)), fill=DIM)
-                self.after(45, _roll, frame + 1)
-            else:
-                final = crypto_rand(lo, hi)
-                col   = number_color(final, lo, hi, invert=self._invert)
-                self.cv.itemconfig(self.num_id, text=str(final), fill=col)
-                self._rolling = False
-                self._flash(col)
+        def _roll():
+            final = crypto_rand(lo, hi)
+            col   = number_color(final, lo, hi, invert=self._invert)
+            self.cv.itemconfig(self.num_id, text=str(final), fill=col)
+            self._rolling = False
+            self._flash(col)
 
         _roll()
 
@@ -531,8 +521,8 @@ class RNGWidget(tk.Toplevel):
     def update_settings(self, invert):
         self._invert = invert
 
-    def set_action_detect(self, enabled):
-        self._action_detect = enabled
+    def set_hover_detect(self, enabled):
+        self._hover_detect = enabled
         if enabled:
             self.cv.itemconfig(self.dot_id, fill=GREEN)
         elif not self._rolling:
@@ -581,7 +571,7 @@ class ControlPanel(tk.Tk):
         self._last_scroll_rw = -1
 
         self._invert_gradient  = tk.BooleanVar(value=False)
-        self._action_detect    = tk.BooleanVar(value=False)
+        self._hover_detect    = tk.BooleanVar(value=False)
         self._mode_var         = tk.StringVar(value="manual")
         self._lo_var          = tk.StringVar(value="1")
         self._hi_var          = tk.StringVar(value="100")
@@ -791,7 +781,7 @@ class ControlPanel(tk.Tk):
         tk.Label(self._interval_row, text="sec", bg=BG, fg=DIM,
                  font=(MONO, 8)).pack(side="left")
 
-        radio("Auto on action", "action")
+        radio("Auto on hover", "hover")
 
         # Invert gradient
         chk_f = tk.Frame(sf, bg=BG)
@@ -844,24 +834,24 @@ class ControlPanel(tk.Tk):
             self._interval_row.pack_forget()
 
         if mode == "manual":
-            self._action_detect.set(False)
+            self._hover_detect.set(False)
             self._interval_var.set("0")
             for w in list(self.widgets.values()):
-                try: w.stop_timer(); w.set_action_detect(False)
+                try: w.stop_timer(); w.set_hover_detect(False)
                 except: pass
 
         elif mode == "interval":
-            self._action_detect.set(False)
+            self._hover_detect.set(False)
             for w in list(self.widgets.values()):
-                try: w.set_action_detect(False)
+                try: w.set_hover_detect(False)
                 except: pass
             self._apply_settings()
 
-        elif mode == "action":
+        elif mode == "hover":
             self._interval_var.set("0")
-            self._action_detect.set(True)
+            self._hover_detect.set(True)
             for w in list(self.widgets.values()):
-                try: w.stop_timer(); w.set_action_detect(True)
+                try: w.stop_timer(); w.set_hover_detect(True)
                 except: pass
 
     def _push_settings(self):
@@ -1020,8 +1010,8 @@ class ControlPanel(tk.Tk):
                                 w._start_timer(iv)
                         except Exception:
                             pass
-                        if self._mode_var.get() == "action":
-                            w.set_action_detect(True)
+                        if self._mode_var.get() == "hover":
+                            w.set_hover_detect(True)
                         elif self._mode_var.get() == "interval":
                             try:
                                 iv = int(self._interval_var.get())
