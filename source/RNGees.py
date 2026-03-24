@@ -419,7 +419,7 @@ class RNGWidget(tk.Toplevel):
 
             except Exception:
                 pass
-            time.sleep(0.1)
+            time.sleep(0.2)
 
     def _move_to(self, wx, wy, new_s):
         try:
@@ -453,18 +453,19 @@ class RNGWidget(tk.Toplevel):
         self._rolling = True
         lo, hi = self._lo, self._hi
 
-        def _roll():
-            for _ in range(7):
+        def _roll(frame=0):
+            if frame < 7:
                 self.cv.itemconfig(self.num_id,
                                    text=str(_fast_rand(lo, hi)), fill=DIM)
-                time.sleep(0.045)
-            final = crypto_rand(lo, hi)
-            col   = number_color(final, lo, hi, invert=self._invert)
-            self.cv.itemconfig(self.num_id, text=str(final), fill=col)
-            self._rolling = False
-            self._flash(col)
+                self.after(45, _roll, frame + 1)
+            else:
+                final = crypto_rand(lo, hi)
+                col   = number_color(final, lo, hi, invert=self._invert)
+                self.cv.itemconfig(self.num_id, text=str(final), fill=col)
+                self._rolling = False
+                self._flash(col)
 
-        threading.Thread(target=_roll, daemon=True).start()
+        _roll()
 
     def _flash(self, color):
         self.cv.itemconfig("bg_rect", outline=color)
@@ -897,24 +898,53 @@ class ControlPanel(tk.Tk):
         if not key:
             return
 
-        # Unbind previous
-        if HAS_KEYBOARD and self._hotkey_bound:
-            try: keyboard.remove_hotkey(self._hotkey_bound)
-            except Exception: pass
-        elif self._hotkey_bound:
+        # Unbind previous tkinter binding (no-op if not set)
+        if self._hotkey_bound:
             try: self.unbind_all(f"<Key-{self._hotkey_bound}>")
             except Exception: pass
 
         self._hotkey_bound = key
 
-        if HAS_KEYBOARD:
-            # Global hotkey — fires even when another window is focused
-            keyboard.add_hotkey(key, lambda: self.after(0, self._on_hotkey))
-            self._log(f"Hotkey: '{key}' (global)")
+        if WIN32:
+            # Global hotkey via GetAsyncKeyState polling — no low-level hook,
+            # so it cannot block or delay GGPoker's input processing.
+            self._start_hotkey_poll(key)
+            self._log(f"Hotkey: '{key}' (global, polled)")
         else:
             # Fallback: tkinter-only (requires panel focus)
             self.bind_all(f"<Key-{key}>", self._on_hotkey)
-            self._log(f"Hotkey: '{key}' (install keyboard lib for global)")
+            self._log(f"Hotkey: '{key}' (install pywin32 for global)")
+
+    # Map single-char or named keys to virtual-key codes
+    _VK_MAP = {
+        "space": 0x20, "return": 0x0D, "tab": 0x09,
+        "f1":  0x70, "f2":  0x71, "f3":  0x72, "f4":  0x73,
+        "f5":  0x74, "f6":  0x75, "f7":  0x76, "f8":  0x77,
+        "f9":  0x78, "f10": 0x79, "f11": 0x7A, "f12": 0x7B,
+    }
+
+    def _start_hotkey_poll(self, key):
+        """Daemon thread: polls GetAsyncKeyState every 50 ms.
+        Detects the key-down edge and fires _on_hotkey on the main thread.
+        No WH_KEYBOARD_LL hook is installed so GGPoker input is never affected."""
+        my_key = key  # capture
+
+        def _poll():
+            vk = self._VK_MAP.get(my_key)
+            if vk is None and len(my_key) == 1:
+                vk = ctypes.windll.user32.VkKeyScanA(ord(my_key)) & 0xFF
+            if not vk:
+                return  # unknown key, give up silently
+            was_down = False
+            while self._hotkey_bound == my_key:
+                state = ctypes.windll.user32.GetAsyncKeyState(vk)
+                is_down = bool(state & 0x8000)
+                if is_down and not was_down:
+                    self.after(0, self._on_hotkey)
+                was_down = is_down
+                time.sleep(0.05)
+
+        threading.Thread(target=_poll, daemon=True).start()
 
     def _on_hotkey(self, event=None):
         self._apply_settings()
