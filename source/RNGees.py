@@ -353,17 +353,15 @@ class RNGWidget(tk.Toplevel):
 
     # ── TRACKING ──────────────────────────────────────
     def _track_loop(self):
-        """Repositions widget every tick and detects action via smart focus steal."""
-        CLICK_WINDOW = 0.25
-        VK_LBUTTON   = 0x01
-        VK_RBUTTON   = 0x02
-        was_fg       = False
-        last_click   = (0.0, -1, -1)
-        last_tw, last_th = 0, 0
+        """Repositions widget every tick and detects action via cursor hover."""
+        was_hover = False
 
         while self._tracking:
             try:
-                # ── Reposition widget ──────────────────
+                pt = ctypes.wintypes.POINT()
+                ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+
+                # ── Reposition widget + hover detection ─
                 if not self._dragging:
                     r = get_window_rect(self.hwnd)
                     if r:
@@ -372,50 +370,23 @@ class RNGWidget(tk.Toplevel):
                         wx    = tx + self._off_x
                         wy    = ty + th + self._off_y
                         self.after(0, self._move_to, wx, wy, new_s)
-                        last_tw, last_th = tw, th
 
-                # ── Track mouse clicks ─────────────────
-                ls = ctypes.windll.user32.GetAsyncKeyState(VK_LBUTTON)
-                rs = ctypes.windll.user32.GetAsyncKeyState(VK_RBUTTON)
-                if (ls & 0x0001) or (rs & 0x0001):
-                    pt = ctypes.wintypes.POINT()
-                    ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
-                    last_click = (time.monotonic(), pt.x, pt.y)
+                        is_hover = (tx <= pt.x <= tx + tw and
+                                    ty <= pt.y <= ty + th)
 
-                # ── Focus change detection ─────────────
-                is_fg = (ctypes.windll.user32.GetForegroundWindow() == self.hwnd)
+                        if is_hover and not was_hover:
+                            if self._action_detect:
+                                self.after(0, self.generate)
+                        elif not is_hover and was_hover:
+                            self.after(0, self._clear_display)
 
-                if is_fg and not was_fg:
-                    # Wait 50ms so any simultaneous click registers
-                    time.sleep(0.05)
-                    ls2 = ctypes.windll.user32.GetAsyncKeyState(VK_LBUTTON)
-                    rs2 = ctypes.windll.user32.GetAsyncKeyState(VK_RBUTTON)
-                    if (ls2 & 0x0001) or (rs2 & 0x0001):
-                        pt2 = ctypes.wintypes.POINT()
-                        ctypes.windll.user32.GetCursorPos(ctypes.byref(pt2))
-                        last_click = (time.monotonic(), pt2.x, pt2.y)
+                        if is_hover != was_hover:
+                            hw = self.hwnd
+                            hv = is_hover
+                            self.master.after(0, lambda h=hw, f=hv:
+                                self.master.set_row_focus(h, f))
 
-                    if self._action_detect:
-                        click_t, cx, cy = last_click
-                        since_click = time.monotonic() - click_t
-                        if since_click > CLICK_WINDOW:
-                            # No recent click → smart focus steal → roll
-                            self.after(0, self.generate)
-                        else:
-                            # Recent click — only ignore if it was inside this table
-                            r = get_window_rect(self.hwnd)
-                            if r:
-                                tx, ty, tw, th = r
-                                if not (tx <= cx <= tx + tw and ty <= cy <= ty + th):
-                                    self.after(0, self.generate)
-
-                if is_fg != was_fg:
-                    hw = self.hwnd
-                    fg = is_fg
-                    self.master.after(0, lambda h=hw, f=fg:
-                        self.master.set_row_focus(h, f))
-
-                was_fg = is_fg
+                        was_hover = is_hover
 
             except Exception:
                 pass
@@ -466,6 +437,13 @@ class RNGWidget(tk.Toplevel):
                 self._flash(col)
 
         _roll()
+
+    def _clear_display(self):
+        try:
+            self.cv.itemconfig(self.num_id, text="")
+            self.cv.itemconfig("bg_rect", outline=BORDER)
+        except Exception:
+            pass
 
     def _flash(self, color):
         self.cv.itemconfig("bg_rect", outline=color)
