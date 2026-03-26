@@ -82,12 +82,6 @@ class MockTable(tk.Tk):
             b.grid(row=0, column=col, padx=4, pady=6)
         self._btn_win = None   # canvas window item, created on trigger
 
-        # ── DETECTION REGION HIGHLIGHT ───────────────────────
-        self._region_rect  = self._canvas.create_rectangle(
-            0, 0, 1, 1, outline="#ff0000", width=2, dash=(4,3), tags="region")
-        self._region_label = self._canvas.create_text(
-            0, 0, text="detection region",
-            fill="#ff0000", font=("Arial", 7), anchor="se", tags="region_lbl")
 
         # ── BINDINGS ─────────────────────────────────────────
         self.bind("<space>",  lambda e: self._trigger_action())
@@ -101,15 +95,6 @@ class MockTable(tk.Tk):
         # Reposition buttons if visible
         if self._btn_win:
             self._canvas.coords(self._btn_win, w, h)
-        # Detection region — matches RNGees X1=0.40 X2=0.97 Y1=0.83 Y2=0.97
-        TOP     = 36
-        total_h = h + TOP
-        rx1 = int(w * 0.68)
-        rx2 = int(w * 0.97)
-        ry1 = int(total_h * 0.85) - TOP
-        ry2 = int(total_h * 0.97) - TOP
-        self._canvas.coords(self._region_rect,  rx1, ry1, rx2, ry2)
-        self._canvas.coords(self._region_label, rx2 - 2, ry1 - 2)
 
     def _trigger_action(self):
         if self._action_visible:

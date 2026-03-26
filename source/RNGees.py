@@ -11,6 +11,7 @@ import threading
 import time
 import os
 import sys
+import json
 import random
 _fast_rand = random.randint
 import ctypes
@@ -207,6 +208,37 @@ class RNGWidget(tk.Toplevel):
         any active entry loses focus, triggers FocusOut → applies settings."""
         if not isinstance(event.widget, tk.Entry):
             self.focus()
+
+    # ── CONFIG ────────────────────────────────────────
+    def _load_config(self):
+        """Load saved settings from JSON, apply to BooleanVars/StringVars."""
+        try:
+            with open(self._config_file, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            self._lo_var.set(str(cfg.get("lo", "1")))
+            self._hi_var.set(str(cfg.get("hi", "100")))
+            self._interval_var.set(str(cfg.get("interval", "0")))
+            self._hotkey_var.set(str(cfg.get("hotkey", "v")))
+            self._mode_var.set(cfg.get("mode", "manual"))
+            self._invert_gradient.set(bool(cfg.get("invert_gradient", False)))
+        except Exception:
+            pass  # first run or corrupt file — use defaults
+
+    def _save_config(self):
+        """Persist current settings to JSON."""
+        try:
+            cfg = {
+                "lo":               self._lo_var.get(),
+                "hi":               self._hi_var.get(),
+                "interval":         self._interval_var.get(),
+                "hotkey":           self._hotkey_var.get(),
+                "mode":             self._mode_var.get(),
+                "invert_gradient":  self._invert_gradient.get(),
+            }
+            with open(self._config_file, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=2)
+        except Exception:
+            pass
 
     # ── BUILD ─────────────────────────────────────────
     def _build(self):
@@ -579,10 +611,19 @@ class ControlPanel(tk.Tk):
         self._hotkey_var      = tk.StringVar(value="v")
         self._hotkey_bound    = None
 
+        # ── Config persistence ────────────────────────
+        if getattr(sys, "frozen", False):
+            _cfg_dir = os.path.dirname(sys.executable)
+        else:
+            _cfg_dir = os.path.dirname(os.path.abspath(__file__))
+        self._config_file = os.path.join(_cfg_dir, "rngees_config.json")
+        self._load_config()
+
         self._build()
         self._bind_hotkey()
         # Clicking anywhere outside an entry defocuses it (hides cursor + applies)
         self.bind_all("<Button-1>", self._defocus_entries, add="+")
+        self.after(200, self._apply_mode)  # apply loaded mode after UI settles
 
         if not HAS_KEYBOARD:
             self._log("pip install keyboard  → for global hotkey")
@@ -598,6 +639,37 @@ class ControlPanel(tk.Tk):
         any active entry loses focus, triggers FocusOut → applies settings."""
         if not isinstance(event.widget, tk.Entry):
             self.focus()
+
+    # ── CONFIG ────────────────────────────────────────
+    def _load_config(self):
+        """Load saved settings from JSON, apply to BooleanVars/StringVars."""
+        try:
+            with open(self._config_file, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            self._lo_var.set(str(cfg.get("lo", "1")))
+            self._hi_var.set(str(cfg.get("hi", "100")))
+            self._interval_var.set(str(cfg.get("interval", "0")))
+            self._hotkey_var.set(str(cfg.get("hotkey", "v")))
+            self._mode_var.set(cfg.get("mode", "manual"))
+            self._invert_gradient.set(bool(cfg.get("invert_gradient", False)))
+        except Exception:
+            pass  # first run or corrupt file — use defaults
+
+    def _save_config(self):
+        """Persist current settings to JSON."""
+        try:
+            cfg = {
+                "lo":               self._lo_var.get(),
+                "hi":               self._hi_var.get(),
+                "interval":         self._interval_var.get(),
+                "hotkey":           self._hotkey_var.get(),
+                "mode":             self._mode_var.get(),
+                "invert_gradient":  self._invert_gradient.get(),
+            }
+            with open(self._config_file, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=2)
+        except Exception:
+            pass
 
     # ── BUILD ─────────────────────────────────────────
     def _build(self):
@@ -806,6 +878,7 @@ class ControlPanel(tk.Tk):
 
     # ── SETTINGS ──────────────────────────────────────
     def _apply_settings(self):
+        self._save_config()
         try:
             lo = int(self._lo_var.get())
             hi = int(self._hi_var.get())
@@ -827,6 +900,7 @@ class ControlPanel(tk.Tk):
                 pass
 
     def _apply_mode(self):
+        self._save_config()
         mode = self._mode_var.get()
         if mode == "interval":
             self._interval_row.pack(fill="x", pady=1)
@@ -855,6 +929,7 @@ class ControlPanel(tk.Tk):
                 except: pass
 
     def _push_settings(self):
+        self._save_config()
         inv = self._invert_gradient.get()
         for w in list(self.widgets.values()):
             try: w.update_settings(inv)
@@ -862,6 +937,7 @@ class ControlPanel(tk.Tk):
 
     # ── HOTKEY ────────────────────────────────────────
     def _bind_hotkey(self):
+        self._save_config()
         key = self._hotkey_var.get().strip().lower()
         if not key:
             return
