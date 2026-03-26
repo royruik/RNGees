@@ -1,4 +1,4 @@
-# RNGees v1.1.0
+# RNGees v1.1.1
 
 A lightweight RNG overlay for online poker. RNGees sits on top of your poker table and generates a random number on demand — helping you implement mixed GTO strategies without bias.
 ![Mode Illustrate Demo](test_demo/mode_illustrate.gif)
