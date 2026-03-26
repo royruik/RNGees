@@ -97,9 +97,12 @@ Press **Space** to trigger an action, then move your cursor into the MockTable w
 ---
 
 ## Changelog
+### v1.1.1
+- Fixed few bugs (hover mode independency, dot green logic)
 
 ### v1.1.0
 - **Auto on action reworked** — replaced screen capture with hover detection via \`GetCursorPos\` + window bounds check. Rolls on cursor enter, clears on cursor leave. Immune to anti-bot screenshot blocking
+- **Focus indicator** — active table row dot turns gold in the control panel
 - - ~~**Animation of Rolling**~~ — removed for better performance of the app -> faster response, less system resources allocated
 - Removed \`dxcam\`, \`numpy\`, \`mss\` dependencies — no longer needed
 - Removed all screen capture code — Pillow only used for icon rendering

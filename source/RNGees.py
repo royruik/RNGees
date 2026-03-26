@@ -11,7 +11,6 @@ import threading
 import time
 import os
 import sys
-import json
 import random
 _fast_rand = random.randint
 import ctypes
@@ -184,6 +183,7 @@ class RNGWidget(tk.Toplevel):
         self._drag_start_x = self._drag_start_y = 0
         self._dragging          = False  # pause tracking while user is dragging
         self._hover_detect     = False
+        self._was_hover        = False
         self._resizing     = False
         self._resize_start_x = self._resize_start_y = 0
         self._resize_start_s = 0
@@ -208,37 +208,6 @@ class RNGWidget(tk.Toplevel):
         any active entry loses focus, triggers FocusOut → applies settings."""
         if not isinstance(event.widget, tk.Entry):
             self.focus()
-
-    # ── CONFIG ────────────────────────────────────────
-    def _load_config(self):
-        """Load saved settings from JSON, apply to BooleanVars/StringVars."""
-        try:
-            with open(self._config_file, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-            self._lo_var.set(str(cfg.get("lo", "1")))
-            self._hi_var.set(str(cfg.get("hi", "100")))
-            self._interval_var.set(str(cfg.get("interval", "0")))
-            self._hotkey_var.set(str(cfg.get("hotkey", "v")))
-            self._mode_var.set(cfg.get("mode", "manual"))
-            self._invert_gradient.set(bool(cfg.get("invert_gradient", False)))
-        except Exception:
-            pass  # first run or corrupt file — use defaults
-
-    def _save_config(self):
-        """Persist current settings to JSON."""
-        try:
-            cfg = {
-                "lo":               self._lo_var.get(),
-                "hi":               self._hi_var.get(),
-                "interval":         self._interval_var.get(),
-                "hotkey":           self._hotkey_var.get(),
-                "mode":             self._mode_var.get(),
-                "invert_gradient":  self._invert_gradient.get(),
-            }
-            with open(self._config_file, "w", encoding="utf-8") as f:
-                json.dump(cfg, f, indent=2)
-        except Exception:
-            pass
 
     # ── BUILD ─────────────────────────────────────────
     def _build(self):
@@ -381,7 +350,6 @@ class RNGWidget(tk.Toplevel):
     # ── TRACKING ──────────────────────────────────────
     def _track_loop(self):
         """Repositions widget every tick and detects cursor hover."""
-        was_hover = False
 
         while self._tracking:
             try:
@@ -398,26 +366,30 @@ class RNGWidget(tk.Toplevel):
                         wy    = ty + th + self._off_y
                         self.after(0, self._move_to, wx, wy, new_s)
 
-                        is_hover = (tx <= pt.x <= tx + tw and
-                                    ty <= pt.y <= ty + th)
-
-                        if is_hover and not was_hover:
-                            if self._hover_detect:
-                                self.after(0, self.generate)
-                        elif not is_hover and was_hover:
-                            self.after(0, self._clear_display)
-
-                        if is_hover != was_hover:
-                            hw = self.hwnd
-                            hv = is_hover
-                            self.master.after(0, lambda h=hw, f=hv:
-                                self.master.set_row_focus(h, f))
-
-                        was_hover = is_hover
+                        if self._hover_detect:
+                            self._check_hover(pt, tx, ty, tw, th)
 
             except Exception:
                 pass
             time.sleep(0.2)
+
+    def _check_hover(self, pt, tx, ty, tw, th):
+        """Called from _track_loop only when hover mode is active."""
+        is_hover = (tx <= pt.x <= tx + tw and ty <= pt.y <= ty + th)
+
+        if is_hover and not self._was_hover:
+            self.after(0, self.generate)
+        elif not is_hover and self._was_hover:
+            self.after(0, self._clear_display)
+            self.after(0, lambda: self.cv.itemconfig(self.dot_id, fill=GREEN))
+
+        if is_hover != self._was_hover:
+            hw = self.hwnd
+            hv = is_hover
+            self.master.after(0, lambda h=hw, f=hv:
+                self.master.set_row_focus(h, f))
+
+        self._was_hover = is_hover
 
     def _move_to(self, wx, wy, new_s):
         try:
@@ -611,19 +583,10 @@ class ControlPanel(tk.Tk):
         self._hotkey_var      = tk.StringVar(value="v")
         self._hotkey_bound    = None
 
-        # ── Config persistence ────────────────────────
-        if getattr(sys, "frozen", False):
-            _cfg_dir = os.path.dirname(sys.executable)
-        else:
-            _cfg_dir = os.path.dirname(os.path.abspath(__file__))
-        self._config_file = os.path.join(_cfg_dir, "rngees_config.json")
-        self._load_config()
-
         self._build()
         self._bind_hotkey()
         # Clicking anywhere outside an entry defocuses it (hides cursor + applies)
         self.bind_all("<Button-1>", self._defocus_entries, add="+")
-        self.after(200, self._apply_mode)  # apply loaded mode after UI settles
 
         if not HAS_KEYBOARD:
             self._log("pip install keyboard  → for global hotkey")
@@ -639,37 +602,6 @@ class ControlPanel(tk.Tk):
         any active entry loses focus, triggers FocusOut → applies settings."""
         if not isinstance(event.widget, tk.Entry):
             self.focus()
-
-    # ── CONFIG ────────────────────────────────────────
-    def _load_config(self):
-        """Load saved settings from JSON, apply to BooleanVars/StringVars."""
-        try:
-            with open(self._config_file, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-            self._lo_var.set(str(cfg.get("lo", "1")))
-            self._hi_var.set(str(cfg.get("hi", "100")))
-            self._interval_var.set(str(cfg.get("interval", "0")))
-            self._hotkey_var.set(str(cfg.get("hotkey", "v")))
-            self._mode_var.set(cfg.get("mode", "manual"))
-            self._invert_gradient.set(bool(cfg.get("invert_gradient", False)))
-        except Exception:
-            pass  # first run or corrupt file — use defaults
-
-    def _save_config(self):
-        """Persist current settings to JSON."""
-        try:
-            cfg = {
-                "lo":               self._lo_var.get(),
-                "hi":               self._hi_var.get(),
-                "interval":         self._interval_var.get(),
-                "hotkey":           self._hotkey_var.get(),
-                "mode":             self._mode_var.get(),
-                "invert_gradient":  self._invert_gradient.get(),
-            }
-            with open(self._config_file, "w", encoding="utf-8") as f:
-                json.dump(cfg, f, indent=2)
-        except Exception:
-            pass
 
     # ── BUILD ─────────────────────────────────────────
     def _build(self):
@@ -878,7 +810,6 @@ class ControlPanel(tk.Tk):
 
     # ── SETTINGS ──────────────────────────────────────
     def _apply_settings(self):
-        self._save_config()
         try:
             lo = int(self._lo_var.get())
             hi = int(self._hi_var.get())
@@ -894,13 +825,12 @@ class ControlPanel(tk.Tk):
                 w._hi = hi
                 if self._mode_var.get() == "interval" and interval > 0:
                     w._start_timer(interval)
-                else:
+                elif self._mode_var.get() != "hover":
                     w.stop_timer()
             except Exception:
                 pass
 
     def _apply_mode(self):
-        self._save_config()
         mode = self._mode_var.get()
         if mode == "interval":
             self._interval_row.pack(fill="x", pady=1)
@@ -929,7 +859,6 @@ class ControlPanel(tk.Tk):
                 except: pass
 
     def _push_settings(self):
-        self._save_config()
         inv = self._invert_gradient.get()
         for w in list(self.widgets.values()):
             try: w.update_settings(inv)
@@ -937,7 +866,6 @@ class ControlPanel(tk.Tk):
 
     # ── HOTKEY ────────────────────────────────────────
     def _bind_hotkey(self):
-        self._save_config()
         key = self._hotkey_var.get().strip().lower()
         if not key:
             return
