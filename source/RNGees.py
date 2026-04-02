@@ -350,6 +350,7 @@ class RNGWidget(tk.Toplevel):
     # ── TRACKING ──────────────────────────────────────
     def _track_loop(self):
         """Repositions widget every tick and detects cursor hover."""
+        _last_pos = (None, None, None)  # wx, wy, new_s — skip redundant moves
 
         while self._tracking:
             try:
@@ -364,7 +365,10 @@ class RNGWidget(tk.Toplevel):
                         new_s = widget_size_for(tw, th)
                         wx    = tx + self._off_x
                         wy    = ty + th + self._off_y
-                        self.after(0, self._move_to, wx, wy, new_s)
+                        cur = (wx, wy, new_s)
+                        if cur != _last_pos:
+                            _last_pos = cur
+                            self.after(0, self._move_to, wx, wy, new_s)
 
                         if self._hover_detect:
                             self._check_hover(pt, tx, ty, tw, th)
