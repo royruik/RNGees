@@ -451,14 +451,14 @@ class RNGWidget(tk.Toplevel):
         try: self.cv.itemconfig(self.dot_id, fill=GREEN)
         except: pass
         def _loop2():
-            self.generate()
+            self.after(0, self.generate)
             elapsed = 0.0
             while self._timer_running and self._timer_gen == my_gen:
                 time.sleep(0.1)
                 elapsed += 0.1
                 if elapsed >= secs:
                     if self._timer_running and self._timer_gen == my_gen:
-                        self.generate()
+                        self.after(0, self.generate)
                     elapsed = 0.0
         threading.Thread(target=_loop2, daemon=True).start()
 
