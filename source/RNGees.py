@@ -350,6 +350,7 @@ class RNGWidget(tk.Toplevel):
     # ── TRACKING ──────────────────────────────────────
     def _track_loop(self):
         """Repositions widget every tick and detects cursor hover."""
+        _last_pos = (None, None, None)  # wx, wy, new_s — skip redundant moves
 
         while self._tracking:
             try:
@@ -364,7 +365,10 @@ class RNGWidget(tk.Toplevel):
                         new_s = widget_size_for(tw, th)
                         wx    = tx + self._off_x
                         wy    = ty + th + self._off_y
-                        self.after(0, self._move_to, wx, wy, new_s)
+                        cur = (wx, wy, new_s)
+                        if cur != _last_pos:
+                            _last_pos = cur
+                            self.after(0, self._move_to, wx, wy, new_s)
 
                         if self._hover_detect:
                             self._check_hover(pt, tx, ty, tw, th)
@@ -451,14 +455,14 @@ class RNGWidget(tk.Toplevel):
         try: self.cv.itemconfig(self.dot_id, fill=GREEN)
         except: pass
         def _loop2():
-            self.generate()
+            self.after(0, self.generate)
             elapsed = 0.0
             while self._timer_running and self._timer_gen == my_gen:
                 time.sleep(0.1)
                 elapsed += 0.1
                 if elapsed >= secs:
                     if self._timer_running and self._timer_gen == my_gen:
-                        self.generate()
+                        self.after(0, self.generate)
                     elapsed = 0.0
         threading.Thread(target=_loop2, daemon=True).start()
 
@@ -986,52 +990,52 @@ class ControlPanel(tk.Tk):
             try:
                 found     = find_poker_windows()
                 found_map = {hw: (t, x, y, w, h) for hw, t, x, y, w, h in found}
-
-                gone = [k for k in list(self.widgets)
-                        if isinstance(k, int) and k not in found_map]
-                for k in gone:
-                    try: self.widgets[k].destroy()
-                    except: pass
-                    self.widgets.pop(k, None)
-                    self.after(0, self._remove_row, k)
-                    self.after(0, self._log, "Table closed — widget removed")
-
-                for hwnd, (title, tx, ty, tw, th) in found_map.items():
-                    if hwnd not in self.widgets:
-                        S  = widget_size_for(tw, th)
-                        wx = tx + MARGIN
-                        wy = ty + th - S - MARGIN
-                        w  = RNGWidget(self, hwnd=hwnd,
-                                       table_title=title, tw=tw, th=th,
-                                       invert_gradient=self._invert_gradient.get())
-                        w.geometry(f"+{wx}+{wy}")
-                        # Apply current settings
-                        try:
-                            w._lo = int(self._lo_var.get())
-                            w._hi = int(self._hi_var.get())
-                            iv = int(self._interval_var.get())
-                            if iv > 0:
-                                w._start_timer(iv)
-                        except Exception:
-                            pass
-                        if self._mode_var.get() == "hover":
-                            w.set_hover_detect(True)
-                        elif self._mode_var.get() == "interval":
-                            try:
-                                iv = int(self._interval_var.get())
-                                if iv > 0: w._start_timer(iv)
-                            except: pass
-                        self.widgets[hwnd] = w
-                        label = title or f"Table {hwnd}"
-                        self.after(0, self._add_row, hwnd, label)
-                        self.after(0, self._log, f"Attached: {label}")
-
-                self.after(0, self._refresh_status)
-
+                self.after(0, self._apply_scan, found_map)
             except Exception as ex:
                 self.after(0, self._log, f"Scan error: {ex}")
-
             time.sleep(2)
+
+    def _apply_scan(self, found_map):
+        """Apply scan results on the main thread — all tkinter ops are safe here."""
+        gone = [k for k in list(self.widgets)
+                if isinstance(k, int) and k not in found_map]
+        for k in gone:
+            try: self.widgets[k].destroy()
+            except: pass
+            self.widgets.pop(k, None)
+            self._remove_row(k)
+            self._log("Table closed — widget removed")
+
+        for hwnd, (title, tx, ty, tw, th) in found_map.items():
+            if hwnd not in self.widgets:
+                S  = widget_size_for(tw, th)
+                wx = tx + MARGIN
+                wy = ty + th - S - MARGIN
+                w  = RNGWidget(self, hwnd=hwnd,
+                               table_title=title, tw=tw, th=th,
+                               invert_gradient=self._invert_gradient.get())
+                w.geometry(f"+{wx}+{wy}")
+                try:
+                    w._lo = int(self._lo_var.get())
+                    w._hi = int(self._hi_var.get())
+                    iv = int(self._interval_var.get())
+                    if iv > 0:
+                        w._start_timer(iv)
+                except Exception:
+                    pass
+                if self._mode_var.get() == "hover":
+                    w.set_hover_detect(True)
+                elif self._mode_var.get() == "interval":
+                    try:
+                        iv = int(self._interval_var.get())
+                        if iv > 0: w._start_timer(iv)
+                    except: pass
+                self.widgets[hwnd] = w
+                label = title or f"Table {hwnd}"
+                self._add_row(hwnd, label)
+                self._log(f"Attached: {label}")
+
+        self._refresh_status()
 
     # ── MANUAL ADD ────────────────────────────────────
     def _add_manual(self):
