@@ -99,6 +99,12 @@ Press **Space** to trigger an action, then move your cursor into the MockTable w
 ---
 
 ## Changelog
+
+### v1.1.2
+- Timer thread: _loop2 called generate() directly off the main thread — fixed with after(0, self.generate)
+- Scan loop: _scan_loop created/destroyed widgets and modified shared state from a background thread — moved all tkinter ops to a new _apply_scan method on the main thread
+- Redundant moves: _track_loop posted geometry() to the main thread 5×/sec even when the table hadn't moved — added position cache to only dispatch on actual changes
+
 ### v1.1.1
 - Fixed few bugs (hover mode independency, dot green logic)
 
