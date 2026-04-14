@@ -80,7 +80,7 @@ When **Auto on hover** mode is enabled, RNGees uses **cursor hover detection** t
 - Detection is purely geometric — \`GetCursorPos\` is compared against the table window bounds each tick
 - No screen capture, no foreground window polling, no click heuristics
 
-**Why this works for GGPoker:** When it's your action, you move your cursor to the table to click or smart focus. That cursor entry is the trigger — no screenshot or process interaction required, so GGPoker's anti-bot measures have nothing to block.
+**Why this works for GGPoker:** When it's your action, you move your cursor to the table to click or hotkey. That cursor entry is the trigger — no screenshot or process interaction required, so GGPoker's anti-bot measures have nothing to block.
 
 **Zero additional CPU cost** — cursor position is a single Win32 call already made each tick for widget repositioning.
 
